@@ -11,13 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 ships npm 11.19.0, which is above the 11.10.0 floor where
+      # min-release-age in .npmrc is actually enforced — so no npm upgrade
+      # step is needed here, and none should be added.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20.19.2'
-
-      # This repo requires npm >= 11.10.0; below that the min-release-age
-      # cooldown in .npmrc is ignored silently. setup-node ships npm 10.x.
-      - run: npm install -g npm@11.10.0
+          node-version: '24'
 
       - run: npm ci
       - run: npm run typecheck

@@ -7,7 +7,7 @@
   "license": "MIT",
   "main": "src/index.ts",
   "scripts": {
-    "verify": "node ../../dist/verify.mjs"
+    "verify": "node src/cli.ts"
   },
   "//": "THIS DEPENDENCY LIST IS THE CLAIM. The verifier depends on nothing of ours: one public Hedera SDK, and node:crypto from the standard library. It does not import @proof-of-spend/anchor, @proof-of-spend/buyer, or any askReceipts client. Adding a workspace dependency here would silently invalidate the central claim of the submission.",
   "dependencies": {

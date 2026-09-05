@@ -4,7 +4,9 @@
  * install appears to succeed and the cooldown simply never applied. A silent
  * loss of a security control is worse than a loud failure, so fail loudly.
  *
- * Note that upgrading Node can *downgrade* npm. Check both.
+ * Node 24 ships npm 11.19.0, so this should not fire on a supported setup.
+ * It exists for the case where someone has pinned an older npm by hand —
+ * upgrading Node can *downgrade* npm. Check both.
  */
 const REQUIRED = [11, 10, 0];
 const actual = process.env.npm_config_user_agent?.match(/npm\/(\d+)\.(\d+)\.(\d+)/);
@@ -26,7 +28,7 @@ if (!ok) {
     `This repo requires npm >= ${REQUIRED.join(".")}. Below that version, the\n` +
     `min-release-age=7 cooldown in .npmrc is ignored WITHOUT WARNING, so a\n` +
     `package published minutes ago could enter the lockfile.\n\n` +
-    `  nvm use 20.19.2 && npm install -g npm@latest\n\n` +
+    `  nvm install 24   # ships npm 11.19.0, which is new enough\n\n` +
     `Then check both:  node --version && npm --version\n`,
   );
   process.exit(1);

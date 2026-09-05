@@ -31,6 +31,37 @@ deleted. A dependency list containing exactly one rail is evidence for that.
 Cost: cross-package TypeScript resolution, paid once by bundling each entry
 point separately with esbuild.
 
+## Decision: Node 24, and therefore no build step
+
+The first draft of this repo targeted Node 20, inherited from payment-rails-buyer.
+That was wrong on two counts, both found by checking rather than by reasoning:
+
+**Node 20 reached end of life on 2026-04-30** and receives no security updates.
+Shipping an EOL runtime next to an `.npmrc` cooldown undercuts the argument the
+cooldown is making.
+
+**Node 24 ships npm 11.19.0**, above the 11.10.0 floor where `min-release-age`
+is actually enforced. Node 22 ships npm 10.9.8 and would still need a global npm
+upgrade in CI and on every contributor's machine, so 22 solves the support-date
+problem without solving the npm one.
+
+Node 24 also runs TypeScript directly, so the esbuild bundling step, the
+`dist/` directory and the `esbuild` devDependency were all deleted. `npm ci` no
+longer runs a `prepare` script, and the entry points are run as sources:
+
+    npm run e2e          -> node scripts/e2e.ts
+
+Verified before committing: type stripping handles both this repo's import
+styles — relative imports carrying an explicit `.ts` extension, and workspace
+package imports resolving through `node_modules` to a package's `src/index.ts`.
+
+The sources must stay within what type stripping supports: type annotations,
+interfaces and `import type` are fine; enums, namespaces and parameter
+properties are not, and would silently reintroduce the need for a build step.
+
+If the store's deploy target later wants a single bundled artifact, that is a
+reason to bring esbuild back for `packages/store` alone — not for the repo.
+
 ## Decision: the two hash implementations are duplicated on purpose
 
 `packages/anchor/src/hash.ts` and `packages/verifier/src/hash.ts` implement the

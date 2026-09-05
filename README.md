@@ -49,11 +49,14 @@ control.
 
 ## Requirements
 
-- **Node ≥ 20.19.2**
-- **npm ≥ 11.10.0** — a `preinstall` hook refuses to install on anything older.
-  Below that version npm silently ignores the 7-day `min-release-age` cooldown
-  in `.npmrc`, which is this repo's main supply-chain defence. Upgrading Node
-  can *downgrade* npm, so check both: `node --version && npm --version`.
+- **Node >= 24.** Node 20 reached end of life on 2026-04-30 and 22 ships an npm
+  too old for the cooldown below, so 24 is the floor. It also runs TypeScript
+  directly, which is why this repo has no build step.
+- **npm >= 11.10.0** — Node 24 ships 11.19.0, so this is satisfied out of the
+  box. A `preinstall` hook enforces it anyway, for anyone who has pinned an
+  older npm by hand: below 11.10.0, npm silently ignores the 7-day
+  `min-release-age` cooldown in `.npmrc`, which is this repo's main
+  supply-chain defence.
 
 ## Run it
 
@@ -62,8 +65,7 @@ control.
     npm run e2e
 
 `npm ci` installs strictly from the committed lockfile and resolves nothing new.
-It also runs the build, which produces `dist/` — not committed, so it does not
-exist until you install.
+There is no build step: Node 24 executes the TypeScript sources directly.
 
 Only two environment variables are required; everything else defaults to public
 infrastructure. See `.env.example`.
