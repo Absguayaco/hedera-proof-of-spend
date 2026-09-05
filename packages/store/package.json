@@ -1,0 +1,20 @@
+{
+  "name": "@proof-of-spend/store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An x402-gated service on hedera:testnet, quoting in native HBAR.",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node ../../dist/store.mjs"
+  },
+  "dependencies": {
+    "@x402/core": "2.23.0",
+    "@x402/extensions": "2.23.0",
+    "@x402/hono": "2.23.0",
+    "@hono/node-server": "2.1.1",
+    "hono": "4.13.5"
+  },
+  "//": "@x402/paywall is an OPTIONAL peer of @x402/hono and is deliberately NOT installed: it is a browser paywall UI for human visitors, and it pulls wagmi, Solana, Algorand wallets and WalletConnect into a machine-to-machine store. This service is only ever called by an agent."
+}

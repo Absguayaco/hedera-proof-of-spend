@@ -1,0 +1,13 @@
+{
+  "name": "@proof-of-spend/anchor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent-side HCS anchoring: hash a filed receipt, submit the hash to a topic. Best-effort by design.",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "//": "Pinned to 2.87.0 and forced tree-wide by an override in the root package.json, so exactly one copy of the Hedera SDK is installed. See docs/design.md \u2014 2.85.0, which @x402/hedera pins, drags in react-native and crypto-js through @hiero-ledger/cryptography@1.19.",
+  "dependencies": {
+    "@hiero-ledger/sdk": "2.87.0"
+  }
+}
