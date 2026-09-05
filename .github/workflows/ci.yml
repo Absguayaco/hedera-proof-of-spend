@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.2'
+
+      # The repo requires npm >= 11.10.0; below that the min-release-age
+      # cooldown in .npmrc is ignored silently. setup-node ships npm 10.x.
+      - run: npm install -g npm@11.10.0
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test --if-present
+
+      # The verifier's independence is a claim the CI should defend, not just
+      # the README. Fail the build if it ever gains a workspace dependency.
+      - name: verifier depends on nothing of ours
+        run: |
+          if grep -q '@proof-of-spend/' packages/verifier/package.json; then
+            echo "packages/verifier must not depend on any workspace package"
+            exit 1
+          fi
