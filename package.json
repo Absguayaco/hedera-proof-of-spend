@@ -1,0 +1,37 @@
+{
+  "name": "hedera-proof-of-spend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An agent that spends money you can audit without trusting the auditor.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.19.2",
+    "npm": ">=11.10.0"
+  },
+  "scripts": {
+    "preinstall": "node scripts/check-npm-version.mjs",
+    "prepare": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "e2e": "node dist/e2e.mjs",
+    "start:store": "node dist/store.mjs",
+    "verify": "node dist/verify.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "overrides": {
+    "@hiero-ledger/sdk": "2.87.0"
+  }
+}
