@@ -11,10 +11,11 @@
     "dev": "node --watch src/index.ts"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.1",
     "@x402/core": "2.23.0",
     "@x402/extensions": "2.23.0",
+    "@x402/hedera": "2.23.0",
     "@x402/hono": "2.23.0",
-    "@hono/node-server": "2.1.1",
     "hono": "4.13.5"
   },
   "//": "@x402/paywall is an OPTIONAL peer of @x402/hono and is deliberately NOT installed: it is a browser paywall UI for human visitors, and it pulls wagmi, Solana, Algorand wallets and WalletConnect into a machine-to-machine store. This service is only ever called by an agent."
