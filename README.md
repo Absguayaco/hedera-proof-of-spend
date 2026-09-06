@@ -70,6 +70,24 @@ There is no build step: Node 24 executes the TypeScript sources directly.
 Only two environment variables are required; everything else defaults to public
 infrastructure. See `.env.example`.
 
+## Running the store yourself
+
+The demo buys from a hosted deployment, so you do not need this. To run the
+seller side locally:
+
+    STORE_PAYEE_ID=0.0.<your account> \
+    FACILITATOR_URL=https://api.testnet.blocky402.com \
+    npm run start:store
+
+It refuses to start unless the facilitator is reachable *and* settles
+`exact/hedera:testnet` — otherwise the store would bind its port, look healthy,
+and fail every purchase.
+
+`GET /menu` and `GET /health` are free; discovery must not cost money, or an
+agent cannot find out what anything costs without paying first. Every
+`GET /buy/<slug>` is gated and answers 402 with a challenge quoting native HBAR
+(asset `0.0.0`) in tinybar.
+
 ## Verify it yourself
 
 1. The agent calls `check_budget` and is told whether it may spend.
