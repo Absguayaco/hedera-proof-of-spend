@@ -152,6 +152,7 @@ import { buyResource } from "./index.ts";
 const OPERATOR_ID = "0.0.99999";
 const OPERATOR_KEY = PrivateKey.generateECDSA().toStringDer();
 const PAY_TO = "0.0.54321";
+const FACILITATOR_ID = "0.0.11111";
 const URL = "http://localhost:8402/buy/espresso";
 
 function encodeHeader(value: unknown): string {
@@ -170,7 +171,12 @@ function paymentRequiredResponse(network: `${string}:${string}`): Response {
         amount: "15000000",
         payTo: PAY_TO,
         maxTimeoutSeconds: 60,
-        extra: {},
+        // The Hedera exact scheme requires the fee payer's account id here
+        // to set the transaction's TransactionId — a real store's 402
+        // challenge always carries this (it's the facilitator's fee-payer
+        // address; see packages/store/src/preflight.test.ts's fixtures for
+        // the same field).
+        extra: { feePayer: FACILITATOR_ID },
       },
     ],
   };
@@ -321,7 +327,31 @@ export async function buyResource(
     request.operatorId,
     PrivateKey.fromString(request.operatorKey),
   );
-  const client = new x402Client().register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
+  // x402Client's default spend controls only allow the network's "default
+  // asset" (USDC on hedera:testnet, per @x402/hedera's DEFAULT_ASSETS table)
+  // — native HBAR would be rejected before assertChallengeNetwork ever runs.
+  // Scoped to exactly this network and asset, with an explicit atomic cap,
+  // rather than disabling spend controls outright: `setSpendControls(false)`
+  // would also forfeit the ability to cap the payment at all, since HBAR was
+  // never a recognized "default asset" the SDK's own $1 cap applies to in
+  // the first place — it was simply blocked, not capped. This cap is a
+  // backstop against a malicious or misbehaving store quoting an absurd
+  // amount; it is deliberately generous relative to this store's menu
+  // (packages/store/src/menu.ts tops out at 0.35 HBAR) rather than coupled
+  // to it — this package is seller-agnostic and must not know a specific
+  // store's catalogue.
+  const MAX_TINYBAR_PER_PAYMENT = "100000000"; // 1 HBAR
+  const client = new x402Client()
+    .setSpendControls({
+      allowedAssets: [
+        {
+          network: ALLOWED_X402_NETWORK,
+          asset: "0.0.0",
+          maxAmountPerPayment: MAX_TINYBAR_PER_PAYMENT,
+        },
+      ],
+    })
+    .register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
   const httpClient = new x402HTTPClient(client);
 
   const challenge = await fetchImpl(request.url);
