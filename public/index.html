@@ -1,44 +1,181 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proof of Spend — demo store</title>
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
-    max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem;
+  :root {
+    color-scheme: light dark;
+
+    /* Polaris tokens (@shopify/polaris-tokens), light mode, hand-copied —
+       no package dependency added. */
+    --surface: #ffffff;
+    --surface-subdued: #f1f1f1;
+    --text: #202223;
+    --text-subdued: #6d7175;
+    --border: #c9cccf;
+    --link: #005bd3;
+
+    --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --font-body: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
   }
-  h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
-  p { margin: 0 0 1rem; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
-  dt { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; margin-top: .75rem; }
-  dd { margin: 0 0 0 1.5rem; opacity: .8; }
-  .note { opacity: .7; font-size: .9em; border-top: 1px solid currentColor; padding-top: 1rem; margin-top: 2rem; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Derived from the light tokens above to keep the same relationships;
+         Polaris ships no official dark palette. */
+      --surface: #1a1c1d;
+      --surface-subdued: #202223;
+      --text: #f6f6f7;
+      --text-subdued: #9fa3a7;
+      --border: #494c4e;
+      --link: #6ab0ff;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--surface-subdued);
+    color: var(--text);
+    font: 16px/1.6 var(--font-body);
+    margin: 0;
+    padding: 3rem 1.5rem 4rem;
+  }
+
+  main { max-width: 40rem; margin: 0 auto; }
+
+  header p { color: var(--text-subdued); margin: .25rem 0 0; }
+
+  h1 { font: 600 1.75rem/1.2 var(--font-display); margin: 0; }
+  h2 { font: 600 1.1rem/1.3 var(--font-display); margin: 0 0 1rem; }
+
+  code { font-family: var(--font-mono); font-size: .9em; }
+  a { color: var(--link); }
+
+  /* Menu board: a receipt sitting on a Polaris card surface — the store's
+     product is a purchase that is provable on a public ledger. */
+  .receipt {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 2.5rem 0;
+    padding: 1.5rem 1.5rem 1.75rem;
+  }
+
+  .receipt-item {
+    align-items: baseline;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    padding: .85rem 0;
+  }
+
+  .receipt-item:first-of-type { border-top: none; padding-top: 0; }
+  .receipt-item-name { font-weight: 600; }
+
+  .receipt-item-description {
+    color: var(--text-subdued);
+    display: block;
+    font-size: .85em;
+    margin-top: .15rem;
+  }
+
+  .receipt-item-price {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .receipt-item-price small { color: var(--text-subdued); display: block; font-size: .75em; }
+
+  /* API reference */
+  .endpoints { display: grid; gap: .75rem; margin: 0 0 2rem; }
+
+  .endpoint {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .9rem 1rem;
+  }
+
+  .endpoint code { color: var(--link); font-weight: 600; }
+  .endpoint p { color: var(--text-subdued); margin: .35rem 0 0; }
+
+  footer {
+    border-top: 1px solid var(--border);
+    color: var(--text-subdued);
+    font-size: .9em;
+    margin-top: 3rem;
+    padding-top: 1.25rem;
+  }
 </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Proof of Spend</h1>
+    <p>
+      An x402-gated store on <code>hedera:testnet</code>, quoting in native
+      HBAR (asset <code>0.0.0</code>). Built to be called by an agent, not
+      read by a person — but here is what it sells and exposes.
+    </p>
+  </header>
 
-<h1>Proof of Spend — demo store</h1>
+  <section class="receipt" aria-label="Menu">
+    <h2>Menu</h2>
 
-<p>
-  An x402-gated service on <code>hedera:testnet</code>, quoting in native HBAR
-  (asset <code>0.0.0</code>). It is meant to be called by an agent, not read by
-  a person, but here is what it exposes.
-</p>
+    <div class="receipt-item">
+      <span>
+        <span class="receipt-item-name">Espresso</span>
+        <span class="receipt-item-description">A single shot. The cheapest thing an agent can buy here.</span>
+      </span>
+      <span class="receipt-item-price">15000000 tinybar<small>0.15 HBAR</small></span>
+    </div>
 
-<dl>
-  <dt><a href="/menu">GET /menu</a></dt>
-  <dd>The catalogue, with prices in tinybar. Free — discovery must not cost money.</dd>
+    <div class="receipt-item">
+      <span>
+        <span class="receipt-item-name">Flat white</span>
+        <span class="receipt-item-description">Double ristretto, steamed milk.</span>
+      </span>
+      <span class="receipt-item-price">25000000 tinybar<small>0.25 HBAR</small></span>
+    </div>
 
-  <dt><a href="/health">GET /health</a></dt>
-  <dd>Network and asset this store is configured for. Free.</dd>
+    <div class="receipt-item">
+      <span>
+        <span class="receipt-item-name">Cold brew</span>
+        <span class="receipt-item-description">Steeped eighteen hours. Served over ice.</span>
+      </span>
+      <span class="receipt-item-price">35000000 tinybar<small>0.35 HBAR</small></span>
+    </div>
+  </section>
 
-  <dt>GET /buy/&lt;slug&gt;</dt>
-  <dd>
-    Paid. Answers <code>402</code> with an x402 payment challenge; returns the
-    resource once the facilitator confirms settlement.
-  </dd>
-</dl>
+  <section aria-label="API reference">
+    <h2>API</h2>
+    <div class="endpoints">
+      <div class="endpoint">
+        <code><a href="/menu">GET /menu</a></code>
+        <p>The catalogue, with prices in tinybar. Free — discovery must not cost money.</p>
+      </div>
+      <div class="endpoint">
+        <code><a href="/health">GET /health</a></code>
+        <p>Network and asset this store is configured for. Free.</p>
+      </div>
+      <div class="endpoint">
+        <code>GET /buy/&lt;slug&gt;</code>
+        <p>Paid. Answers <code>402</code> with an x402 payment challenge; returns the resource once the facilitator confirms settlement.</p>
+      </div>
+    </div>
+  </section>
 
-<p class="note">
-  Testnet only. Source:
-  <a href="https://github.com/Absguayaco/hedera-proof-of-spend">github.com/Absguayaco/hedera-proof-of-spend</a>
-</p>
+  <footer>
+    Testnet only. Source:
+    <a href="https://github.com/Absguayaco/hedera-proof-of-spend">github.com/Absguayaco/hedera-proof-of-spend</a>
+  </footer>
+</main>
+</body>
+</html>
