@@ -9,7 +9,6 @@
   "//": "One rail. No rail registry, no funding seam, nothing pluggable. If a second rail ever appears in this dependency list, the claim in the README is no longer true.",
   "dependencies": {
     "@x402/core": "2.23.0",
-    "@x402/fetch": "2.23.0",
     "@x402/hedera": "2.23.0"
   }
 }
