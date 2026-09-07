@@ -105,6 +105,54 @@ To run only the verification half, against a receipt you already hold:
 
     npm run verify -- --receipt ./receipt.json
 
+## How the receipt hash is computed
+
+This is the specification. Both implementations in this repository —
+`packages/anchor/src/hash.ts` and `packages/verifier/src/hash.ts` — are written
+from *this text*, independently, and never from each other. Anyone can write a
+third from it and get the same answer, which is the point.
+
+**Version 1.** The HCS message carries `{"v":1,"h":"<hash>"}`, so this rule can
+change later without invalidating anchors made under the old one.
+
+1. **The receipt must be a JSON object.**
+
+2. **Numbers are rejected.** A JSON number has no single spelling — `1`, `1.0`
+   and `1e0` are the same value and different text — so a canonicalisation that
+   allows them has to legislate for float formatting, and two implementations
+   will eventually disagree. Amounts are the one thing in a receipt that must
+   not be ambiguous, so they travel as decimal strings. Permitted value types
+   are **string, boolean, null, array, and object**. Anything else — a number,
+   `undefined` as a value, a date, a bigint — is an error, not a coercion.
+
+3. **Object keys are sorted by Unicode code point,** ascending, at every level
+   of nesting. Note this is code point order, not UTF-16 code unit order; they
+   differ above the basic multilingual plane.
+
+4. **Array order is preserved.** Order in an array is data, not presentation.
+
+5. **Keys with no value are omitted.** A key explicitly set to `null` is kept,
+   because `null` is a value; a key that is absent or `undefined` does not
+   appear at all. The two are different receipts.
+
+6. **Serialize as JSON with no insignificant whitespace** — no spaces after
+   `:` or `,`, no newlines, no trailing newline. Strings use minimal RFC 8259
+   escaping, and non-ASCII characters are emitted literally rather than as
+   `\u` escapes.
+
+7. **Encode the result as UTF-8, hash it with SHA-256, and render the digest as
+   lowercase hexadecimal.** That string is the receipt hash.
+
+Worked example. This receipt:
+
+    { "rail": "hedera", "amount": "15000000", "item": { "slug": "espresso" } }
+
+canonicalizes to exactly:
+
+    {"amount":"15000000","item":{"slug":"espresso"},"rail":"hedera"}
+
+and the hash is the SHA-256 of those bytes.
+
 ## What this proves, and what it does not
 
 - **HCS proves integrity, not truth.** A ledger that files a wrong receipt and
