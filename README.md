@@ -122,8 +122,15 @@ change later without invalidating anchors made under the old one.
    allows them has to legislate for float formatting, and two implementations
    will eventually disagree. Amounts are the one thing in a receipt that must
    not be ambiguous, so they travel as decimal strings. Permitted value types
-   are **string, boolean, null, array, and object**. Anything else — a number,
-   `undefined` as a value, a date, a bigint — is an error, not a coercion.
+   are **string, boolean, null, array, and plain object**. Anything else — a
+   number, a bigint, a `Date`, a `Map`, a class instance — is an error, not a
+   coercion.
+
+   "Plain object" is load-bearing. A `Date` has no own enumerable keys, so an
+   implementation that accepts any `typeof "object"` will canonicalize it to
+   `{}` and two receipts that differ only in their timestamp will hash the
+   same. Objects with a `null` prototype are plain; anything with a different
+   prototype is rejected.
 
 3. **Object keys are sorted by Unicode code point,** ascending, at every level
    of nesting. Note this is code point order, not UTF-16 code unit order; they
