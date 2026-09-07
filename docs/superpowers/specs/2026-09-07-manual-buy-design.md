@@ -24,16 +24,14 @@ In scope:
 - Implement `buyResource()` (`packages/buyer/src/index.ts`).
 - Implement `parseSettlement()` and `hashscanUrl()` (`packages/buyer/src/settlement.ts`).
 - A runnable CLI (`packages/buyer/src/cli.ts`) that performs one purchase
-  against a locally-run store and prints the result.
+  against the store — the hosted deployment by default, or a locally-run one
+  via `STORE_URL` — and prints the result.
 
 Out of scope (left for the e2e script later):
 - Budget check (`check_budget`).
 - Filing the receipt to askReceipts.
 - HCS anchoring and verification.
 - Cross-rail spend total.
-- Buying against the hosted (Vercel) deployment — the CLI targets
-  `http://localhost:8402` only, so this work stays decoupled from the
-  separate, concurrent effort getting that deployment running.
 
 ## Components
 
@@ -118,11 +116,11 @@ Mirrors the shape of `packages/verifier/src/cli.ts`.
 ## Data flow
 
 ```
-you: npm run start:store       (separate terminal; needs STORE_PAYEE_ID + FACILITATOR_URL)
 you: npm run buy -- espresso   (needs HEDERA_OPERATOR_ID + HEDERA_OPERATOR_KEY)
+                                (optionally STORE_URL, to target a local store instead)
 
   cli
-   -> buyResource({ url: http://localhost:8402/buy/espresso, operatorId, operatorKey })
+   -> buyResource({ url: <storeUrl>/buy/espresso, operatorId, operatorKey })
         -> GET (402)
         -> assertChallengeNetwork(quoted.network)
         -> sign + pay
