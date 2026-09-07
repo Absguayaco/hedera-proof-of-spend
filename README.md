@@ -70,9 +70,20 @@ There is no build step: Node 24 executes the TypeScript sources directly.
 Only two environment variables are required; everything else defaults to public
 infrastructure. See `.env.example`.
 
-## Running the store yourself
+## The store
 
-The demo buys from a hosted deployment, so you do not need this. To run the
+Live at **https://hedera-proof-of-spend-store.vercel.app** — public, no
+credentials required:
+
+    curl https://hedera-proof-of-spend-store.vercel.app/menu
+    curl -i https://hedera-proof-of-spend-store.vercel.app/buy/espresso   # 402
+
+The second returns a `payment-required` header carrying an x402 challenge for
+native HBAR (asset `0.0.0`) on `hedera:testnet`.
+
+### Running it yourself
+
+The demo buys from the hosted deployment, so you do not need this. To run the
 seller side locally:
 
     STORE_PAYEE_ID=0.0.<your account> \
