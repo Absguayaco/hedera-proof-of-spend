@@ -13,7 +13,11 @@
     --surface: #ffffff;
     --surface-subdued: #f1f1f1;
     --text: #202223;
-    --text-subdued: #6d7175;
+    /* One step darker than Polaris's raw text-subdued (#6d7175): that value
+       clears 4.5:1 against white cards but drops to 4.36:1 against this
+       page's --surface-subdued background, where header/footer text sits
+       directly on it — an AA failure. #63676b clears 4.5:1 on both. */
+    --text-subdued: #63676b;
     --border: #c9cccf;
     --link: #005bd3;
 
