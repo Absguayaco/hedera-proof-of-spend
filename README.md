@@ -88,6 +88,24 @@ agent cannot find out what anything costs without paying first. Every
 `GET /buy/<slug>` is gated and answers 402 with a challenge quoting native HBAR
 (asset `0.0.0`) in tinybar.
 
+## Deploying the store
+
+The store runs on Vercel as a single function. `api/index.ts` is the entry
+point and `vercel.json` routes every path to it.
+
+Serverless has no boot, so the guarantee the long-running server gets for free
+had to be rebuilt: the first request of each cold start runs the facilitator
+preflight, and until it passes every request answers **503 with the reason**. A
+deployment that cannot settle payments does not get to look healthy. A failed
+preflight is not cached, so a facilitator outage recovers without a redeploy.
+
+Two environment variables must be set in the Vercel project:
+
+    STORE_PAYEE_ID     the Hedera account payments are made to
+    FACILITATOR_URL    https://api.testnet.blocky402.com
+
+Node 24 is required and Vercel selects it from `engines` in `package.json`.
+
 ## Verify it yourself
 
 1. The agent calls `check_budget` and is told whether it may spend.

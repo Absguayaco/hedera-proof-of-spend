@@ -62,6 +62,15 @@ properties are not, and would silently reintroduce the need for a build step.
 If the store's deploy target later wants a single bundled artifact, that is a
 reason to bring esbuild back for `packages/store` alone — not for the repo.
 
+**That happened.** The first Vercel deployment failed at runtime with
+`ERR_MODULE_NOT_FOUND: /var/task/packages/store/src/config.ts`. Vercel
+transpiles a function's own file but does not follow relative `.ts` imports into
+other workspace packages, so the deployed function referenced files that were
+never uploaded. `npm run build` now bundles `packages/store/src/vercel.ts` into
+`api/index.js` with esbuild, and `vercel.json` runs it. Exactly one artifact,
+for exactly one deploy target: local development, tests and CI still run the
+sources with no build step. `api/index.js` is generated and gitignored.
+
 ## Decision: the two hash implementations are duplicated on purpose
 
 `packages/anchor/src/hash.ts` and `packages/verifier/src/hash.ts` implement the
@@ -155,17 +164,24 @@ verifier.
   `min-release-age` is ignored **silently**. A security control that appears to
   work but does not is worse than one that fails loudly.
 
-**Correction carried over from payment-rails-buyer:** that repo's `.npmrc` also
-sets `strict-allow-scripts=true` and an `allow-scripts[]` list. Those are **not
-npm settings**. npm 11.10.0 prints `Unknown project config` for both and ignores
-them — the pinned allow-list is decoration, not a control. They are deliberately
-absent here rather than copied across, and payment-rails-buyer is worth fixing
-for the same reason.
+**A correction, and then a correction to the correction.** This document
+previously claimed `allow-scripts` is not an npm setting, on the evidence that
+npm 11.10.0 prints `Unknown project config` for it. That evidence was real but
+the conclusion was too broad: **npm 11.19.0 implements `allow-scripts`**, and
+warns at install time about packages whose install scripts are not yet covered.
+It was a Vercel build log — running the newer npm — that surfaced this.
 
-npm's real lever is `ignore-scripts=true`, which is all-or-nothing and would
-break esbuild's platform-binary postinstall, so it is not enabled. Audit instead:
+So the setting is version-sensitive rather than fake. Node 24 ships npm 11.19.0,
+which this repo requires, so the allow-list is a real control here. On an older
+npm it silently does nothing, which is exactly why the preinstall hook refuses
+to run below 11.10.0: a control that quietly does not apply is worse than none.
 
-    npm ls --all --json | grep -c '"hasInstallScript": true'
+`strict-allow-scripts` is a separate key and has not been verified on 11.19.0;
+it is not used here rather than assumed to work.
+
+**payment-rails-buyer is still worth checking** — not because its allow-list is
+fake, but because whether it works there depends entirely on which npm is
+installed, and its comments do not say so.
 
 **When bumping any dependency, check its publish date first.** A version newer
 than seven days will fail to resolve and the failure does not explain itself.
