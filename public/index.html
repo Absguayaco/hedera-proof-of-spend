@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Proof of Spend — demo store</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 40rem; margin: 0 auto; padding: 3rem 1.5rem;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+  p { margin: 0 0 1rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  dt { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; margin-top: .75rem; }
+  dd { margin: 0 0 0 1.5rem; opacity: .8; }
+  .note { opacity: .7; font-size: .9em; border-top: 1px solid currentColor; padding-top: 1rem; margin-top: 2rem; }
+</style>
+
+<h1>Proof of Spend — demo store</h1>
+
+<p>
+  An x402-gated service on <code>hedera:testnet</code>, quoting in native HBAR
+  (asset <code>0.0.0</code>). It is meant to be called by an agent, not read by
+  a person, but here is what it exposes.
+</p>
+
+<dl>
+  <dt><a href="/menu">GET /menu</a></dt>
+  <dd>The catalogue, with prices in tinybar. Free — discovery must not cost money.</dd>
+
+  <dt><a href="/health">GET /health</a></dt>
+  <dd>Network and asset this store is configured for. Free.</dd>
+
+  <dt>GET /buy/&lt;slug&gt;</dt>
+  <dd>
+    Paid. Answers <code>402</code> with an x402 payment challenge; returns the
+    resource once the facilitator confirms settlement.
+  </dd>
+</dl>
+
+<p class="note">
+  Testnet only. Source:
+  <a href="https://github.com/Absguayaco/hedera-proof-of-spend">github.com/Absguayaco/hedera-proof-of-spend</a>
+</p>

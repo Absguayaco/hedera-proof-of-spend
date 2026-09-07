@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "echo 'no build step: api/index.js is committed and CI checks it is current'",
+  "outputDirectory": "public",
   "rewrites": [
     {
       "source": "/(.*)",
