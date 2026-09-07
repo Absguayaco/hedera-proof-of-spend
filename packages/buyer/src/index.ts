@@ -6,6 +6,11 @@
  * removed. There is no rail registry, no funding seam, and nothing pluggable.
  * If this file grows a second rail, the claim in the README stops being true.
  */
+import { x402Client, x402HTTPClient } from "@x402/core/client";
+import type { PaymentRequired, SettleResponse } from "@x402/core/types";
+import { ExactHederaScheme, PrivateKey, createClientHederaSigner } from "@x402/hedera";
+import { ALLOWED_X402_NETWORK, assertChallengeNetwork } from "./guard.ts";
+import { parseSettlement } from "./settlement.ts";
 import type { HederaSettlement } from "./settlement.ts";
 
 export interface BuyRequest {
@@ -23,14 +28,152 @@ export interface BuyResult {
   readonly settlement: HederaSettlement;
 }
 
-// TODO: implement.
-//   1. GET the url, expect 402
-//   2. assertChallengeNetwork() on the quoted network before signing anything
-//   3. pay via the Hedera exact scheme (@x402/hedera + @x402/fetch)
-//   4. parseSettlement() the facilitator's reference
-//   5. return the resource with its settlement
-export async function buyResource(_request: BuyRequest): Promise<BuyResult> {
-  throw new Error("not implemented");
+/**
+ * A rejected payment can come back as a fresh 402 challenge rather than a
+ * settlement failure. When it does, that challenge's `error` field carries
+ * the facilitator's specific rejection reason — this decodes it, returning
+ * `undefined` for anything else (a non-402 status, no PAYMENT-REQUIRED
+ * header, or a challenge with no `error` set) so the caller can fall back to
+ * a generic message.
+ */
+function rejectionReason(
+  httpClient: x402HTTPClient,
+  response: Response,
+  body: unknown,
+): string | undefined {
+  if (response.status !== 402) return undefined;
+  try {
+    return httpClient.getPaymentRequiredResponse((name) => response.headers.get(name), body)
+      .error;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Buys one resource: GET, expect 402, pay via the Hedera exact scheme, retry.
+ *
+ * Orchestrated explicitly rather than via `wrapFetchWithPayment` so that
+ * `assertChallengeNetwork()` — this package's whole reason a raw private key
+ * is acceptable to sign from — is what actually fires, with its specific
+ * message, on a bad network quote. `wrapFetchWithPayment` would instead
+ * surface a generic "no scheme registered" failure from `@x402/core`,
+ * bypassing the guard entirely.
+ *
+ * `fetchImpl` defaults to the global `fetch` and exists so tests can inject a
+ * fake HTTP layer without touching `globalThis`.
+ */
+export async function buyResource(
+  request: BuyRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BuyResult> {
+  const challenge = await fetchImpl(request.url);
+  if (challenge.status !== 402) {
+    throw new Error(`expected 402 from ${request.url}, got ${challenge.status}`);
+  }
+
+  const challengeBody = await challenge.json().catch(() => undefined);
+  const paymentRequired: PaymentRequired = new x402HTTPClient(
+    new x402Client(),
+  ).getPaymentRequiredResponse((name) => challenge.headers.get(name), challengeBody);
+
+  const [quoted] = paymentRequired.accepts;
+  if (!quoted) {
+    throw new Error(`${request.url} did not quote a price`);
+  }
+  // The challenge is what actually decides where the money goes and what it
+  // buys, so it is checked before any signer is built or key material is
+  // used — not just against whatever network the SDK happens to be
+  // configured for, but against this package's one supported rail.
+  assertChallengeNetwork(quoted.network);
+  if (quoted.asset !== "0.0.0") {
+    throw new Error(`store quoted asset "${quoted.asset}", not native HBAR (0.0.0)`);
+  }
+  if (quoted.scheme !== "exact") {
+    throw new Error(`store quoted scheme "${quoted.scheme}", not "exact"`);
+  }
+
+  const signer = createClientHederaSigner(
+    request.operatorId,
+    PrivateKey.fromString(request.operatorKey),
+  );
+  // x402Client's default spend controls only allow the network's "default
+  // asset" (USDC on hedera:testnet, per @x402/hedera's DEFAULT_ASSETS table)
+  // — native HBAR would be rejected before assertChallengeNetwork ever runs.
+  // Scoped to exactly this network and asset, with an explicit atomic cap,
+  // rather than disabling spend controls outright: `setSpendControls(false)`
+  // would also forfeit the ability to cap the payment at all, since HBAR was
+  // never a recognized "default asset" the SDK's own $1 cap applies to in
+  // the first place — it was simply blocked, not capped. This cap is a
+  // backstop against a malicious or misbehaving store quoting an absurd
+  // amount; it is deliberately generous relative to this store's menu
+  // (packages/store/src/menu.ts tops out at 0.35 HBAR) rather than coupled
+  // to it — this package is seller-agnostic and must not know a specific
+  // store's catalogue.
+  const MAX_TINYBAR_PER_PAYMENT = "100000000"; // 1 HBAR
+  const client = new x402Client()
+    .setSpendControls({
+      allowedAssets: [
+        {
+          network: ALLOWED_X402_NETWORK,
+          asset: "0.0.0",
+          maxAmountPerPayment: MAX_TINYBAR_PER_PAYMENT,
+        },
+      ],
+    })
+    .register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
+  const httpClient = new x402HTTPClient(client);
+
+  // Narrowed to just the entry the guard above validated, so the SDK cannot
+  // select and pay a different `accepts[]` entry than the one
+  // `amountTinybar` below is read from.
+  const paymentPayload = await httpClient.createPaymentPayload({
+    ...paymentRequired,
+    accepts: [quoted],
+  });
+  const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+
+  const paid = await fetchImpl(request.url, { headers: paymentHeaders });
+
+  let settleResponse: SettleResponse;
+  try {
+    settleResponse = httpClient.getPaymentSettleResponse((name) => paid.headers.get(name));
+  } catch (error) {
+    // A rejected payment does not always come back as a settlement failure —
+    // the store's middleware can instead reissue a fresh 402 challenge, with
+    // the rejection reason in its `error` field (e.g. a self-payment, where
+    // payer and payTo are the same account and the transfer nets to zero,
+    // comes back as "invalid_exact_hedera_payload_amount_mismatch"). Surface
+    // that specific reason when it's there, rather than only the generic
+    // "no settlement header" message below.
+    const retryBody = await paid.json().catch(() => undefined);
+    const reason = rejectionReason(httpClient, paid, retryBody);
+    if (reason) {
+      throw new Error(`payment rejected: ${reason}`);
+    }
+    throw new Error(
+      `store did not return a settlement after payment (status ${paid.status}): ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+
+  if (!settleResponse.success) {
+    const reason = settleResponse.errorReason ?? "unknown";
+    const detail = settleResponse.errorMessage ? ` — ${settleResponse.errorMessage}` : "";
+    throw new Error(`payment failed: ${reason}${detail}`);
+  }
+
+  const settlement = parseSettlement(settleResponse.transaction);
+  const amountTinybar = BigInt(quoted.amount);
+  const body = await paid.json().catch((error: unknown) => {
+    throw new Error(
+      `store returned an unparseable body after a successful payment (status ${paid.status}, ` +
+        `transaction ${settlement.transactionId}): ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  });
+
+  return { body, amountTinybar, settlement };
 }
 
 export { assertTestnet, assertChallengeNetwork } from "./guard.ts";
