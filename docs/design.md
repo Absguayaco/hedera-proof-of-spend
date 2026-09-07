@@ -164,17 +164,24 @@ verifier.
   `min-release-age` is ignored **silently**. A security control that appears to
   work but does not is worse than one that fails loudly.
 
-**Correction carried over from payment-rails-buyer:** that repo's `.npmrc` also
-sets `strict-allow-scripts=true` and an `allow-scripts[]` list. Those are **not
-npm settings**. npm 11.10.0 prints `Unknown project config` for both and ignores
-them — the pinned allow-list is decoration, not a control. They are deliberately
-absent here rather than copied across, and payment-rails-buyer is worth fixing
-for the same reason.
+**A correction, and then a correction to the correction.** This document
+previously claimed `allow-scripts` is not an npm setting, on the evidence that
+npm 11.10.0 prints `Unknown project config` for it. That evidence was real but
+the conclusion was too broad: **npm 11.19.0 implements `allow-scripts`**, and
+warns at install time about packages whose install scripts are not yet covered.
+It was a Vercel build log — running the newer npm — that surfaced this.
 
-npm's real lever is `ignore-scripts=true`, which is all-or-nothing and would
-break esbuild's platform-binary postinstall, so it is not enabled. Audit instead:
+So the setting is version-sensitive rather than fake. Node 24 ships npm 11.19.0,
+which this repo requires, so the allow-list is a real control here. On an older
+npm it silently does nothing, which is exactly why the preinstall hook refuses
+to run below 11.10.0: a control that quietly does not apply is worse than none.
 
-    npm ls --all --json | grep -c '"hasInstallScript": true'
+`strict-allow-scripts` is a separate key and has not been verified on 11.19.0;
+it is not used here rather than assumed to work.
+
+**payment-rails-buyer is still worth checking** — not because its allow-list is
+fake, but because whether it works there depends entirely on which npm is
+installed, and its comments do not say so.
 
 **When bumping any dependency, check its publish date first.** A version newer
 than seven days will fail to resolve and the failure does not explain itself.
