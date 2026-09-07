@@ -29,6 +29,28 @@ export interface BuyResult {
 }
 
 /**
+ * A rejected payment can come back as a fresh 402 challenge rather than a
+ * settlement failure. When it does, that challenge's `error` field carries
+ * the facilitator's specific rejection reason — this decodes it, returning
+ * `undefined` for anything else (a non-402 status, no PAYMENT-REQUIRED
+ * header, or a challenge with no `error` set) so the caller can fall back to
+ * a generic message.
+ */
+function rejectionReason(
+  httpClient: x402HTTPClient,
+  response: Response,
+  body: unknown,
+): string | undefined {
+  if (response.status !== 402) return undefined;
+  try {
+    return httpClient.getPaymentRequiredResponse((name) => response.headers.get(name), body)
+      .error;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Buys one resource: GET, expect 402, pay via the Hedera exact scheme, retry.
  *
  * Orchestrated explicitly rather than via `wrapFetchWithPayment` so that
@@ -117,6 +139,18 @@ export async function buyResource(
   try {
     settleResponse = httpClient.getPaymentSettleResponse((name) => paid.headers.get(name));
   } catch (error) {
+    // A rejected payment does not always come back as a settlement failure —
+    // the store's middleware can instead reissue a fresh 402 challenge, with
+    // the rejection reason in its `error` field (e.g. a self-payment, where
+    // payer and payTo are the same account and the transfer nets to zero,
+    // comes back as "invalid_exact_hedera_payload_amount_mismatch"). Surface
+    // that specific reason when it's there, rather than only the generic
+    // "no settlement header" message below.
+    const retryBody = await paid.json().catch(() => undefined);
+    const reason = rejectionReason(httpClient, paid, retryBody);
+    if (reason) {
+      throw new Error(`payment rejected: ${reason}`);
+    }
     throw new Error(
       `store did not return a settlement after payment (status ${paid.status}): ` +
         (error instanceof Error ? error.message : String(error)),

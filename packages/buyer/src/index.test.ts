@@ -16,9 +16,11 @@ function encodeHeader(value: unknown): string {
 function paymentRequiredResponse(
   network: `${string}:${string}`,
   overrides: Partial<PaymentRequired["accepts"][number]> = {},
+  error?: string,
 ): Response {
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
+    error,
     resource: { url: URL },
     accepts: [
       {
@@ -132,6 +134,28 @@ describe("buyResource", () => {
     await expect(
       buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
     ).rejects.toThrow(/insufficient_funds/);
+  });
+
+  it("surfaces the store's specific rejection reason when it reissues a 402 instead of settling", async () => {
+    // Real-world shape, confirmed against the live hosted store: a rejected
+    // payment (e.g. a self-payment, where payer and payTo are the same
+    // account and the transfer nets to zero) does not come back as a
+    // PAYMENT-RESPONSE failure — the store's middleware reissues a fresh 402
+    // challenge whose `error` field names the specific reason.
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      if (call === 1) return paymentRequiredResponse("hedera:testnet");
+      return paymentRequiredResponse(
+        "hedera:testnet",
+        undefined,
+        "invalid_exact_hedera_payload_amount_mismatch",
+      );
+    }) as typeof fetch;
+
+    await expect(
+      buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
+    ).rejects.toThrow(/payment rejected: invalid_exact_hedera_payload_amount_mismatch/);
   });
 
   it("reports the store's status when no settlement header comes back after payment", async () => {
