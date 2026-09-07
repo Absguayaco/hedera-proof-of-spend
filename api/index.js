@@ -170,14 +170,14 @@ function buildRoutes(payTo) {
 }
 
 // packages/store/src/index.ts
-function createApp(config2) {
+function createApp(config) {
   const app = new Hono();
   app.get("/menu", (c) => c.json(menuPayload()));
   app.get("/health", (c) => c.json({ ok: true, network: STORE_NETWORK, asset: STORE_ASSET }));
   app.use(
     paymentMiddlewareFromConfig(
-      buildRoutes(config2.payTo),
-      new HTTPFacilitatorClient({ url: config2.facilitatorUrl }),
+      buildRoutes(config.payTo),
+      new HTTPFacilitatorClient({ url: config.facilitatorUrl }),
       [{ network: STORE_NETWORK, server: new ExactHederaScheme() }]
     )
   );
@@ -201,26 +201,25 @@ function createApp(config2) {
   return app;
 }
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  const config2 = readStoreConfig();
+  const config = readStoreConfig();
   try {
     const { feePayer } = await preflightFacilitator(
-      new HTTPFacilitatorClient({ url: config2.facilitatorUrl }),
+      new HTTPFacilitatorClient({ url: config.facilitatorUrl }),
       STORE_NETWORK
     );
     console.log(
-      `facilitator ok \u2014 ${config2.facilitatorUrl} settles exact/${STORE_NETWORK}` + (feePayer ? ` via fee payer ${feePayer}` : "")
+      `facilitator ok \u2014 ${config.facilitatorUrl} settles exact/${STORE_NETWORK}` + (feePayer ? ` via fee payer ${feePayer}` : "")
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
-  serve({ fetch: createApp(config2).fetch, port: config2.port }, (info) => {
-    console.log(`store listening on :${info.port} \u2014 ${STORE_NETWORK}, paid to ${config2.payTo}`);
+  serve({ fetch: createApp(config).fetch, port: config.port }, (info) => {
+    console.log(`store listening on :${info.port} \u2014 ${STORE_NETWORK}, paid to ${config.payTo}`);
   });
 }
 
 // packages/store/src/vercel.ts
-var config = { runtime: "nodejs" };
 var started;
 async function start() {
   let storeConfig;
@@ -239,7 +238,7 @@ async function start() {
   }
   return { ok: true, handler: handle(createApp(storeConfig)) };
 }
-async function handler(request) {
+async function fetch(request) {
   started ??= start();
   const state = await started;
   if (!state.ok) {
@@ -254,7 +253,8 @@ async function handler(request) {
   }
   return state.handler(request);
 }
+var vercel_default = { fetch };
 export {
-  config,
-  handler as default
+  vercel_default as default,
+  fetch
 };

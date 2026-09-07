@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 async function callMenu(): Promise<Response> {
-  return handler(new Request("https://store.test/menu"));
+  return handler.fetch(new Request("https://store.test/menu"));
 }
 
 describe("misconfiguration is reported, not crashed", () => {

@@ -20,9 +20,6 @@ import { STORE_NETWORK, readStoreConfig } from "./config.ts";
 import { createApp } from "./index.ts";
 import { preflightFacilitator } from "./preflight.ts";
 
-/** Vercel's Node.js runtime, not edge: the Hedera SDK is not edge-compatible. */
-export const config = { runtime: "nodejs" };
-
 type Ready = { ok: true; handler: (req: Request) => Response | Promise<Response> };
 type Broken = { ok: false; reason: string };
 
@@ -50,7 +47,15 @@ async function start(): Promise<Ready | Broken> {
   return { ok: true, handler: handle(createApp(storeConfig)) };
 }
 
-export default async function handler(request: Request): Promise<Response> {
+/**
+ * Vercel's Node.js runtime dispatches on the shape of the default export. An
+ * object with a `fetch` method gets the Web-standard signature; a bare default
+ * function is treated as a Node `(request, response)` handler instead. Exporting
+ * a bare function here meant Vercel called it with an IncomingMessage, nothing
+ * ever wrote to the response, and every request hung with no error and no log
+ * line. The shape below is load-bearing, not stylistic.
+ */
+export async function fetch(request: Request): Promise<Response> {
   // Memoized per cold start. A failed preflight is retried on the next cold
   // start rather than cached forever, so a facilitator outage recovers on its
   // own without a redeploy.
@@ -70,3 +75,5 @@ export default async function handler(request: Request): Promise<Response> {
 
   return state.handler(request);
 }
+
+export default { fetch };
