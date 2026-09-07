@@ -16,9 +16,9 @@
  */
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { handle } from "hono/vercel";
-import { STORE_NETWORK, readStoreConfig } from "../packages/store/src/config.ts";
-import { createApp } from "../packages/store/src/index.ts";
-import { preflightFacilitator } from "../packages/store/src/preflight.ts";
+import { STORE_NETWORK, readStoreConfig } from "./config.ts";
+import { createApp } from "./index.ts";
+import { preflightFacilitator } from "./preflight.ts";
 
 /** Vercel's Node.js runtime, not edge: the Hedera SDK is not edge-compatible. */
 export const config = { runtime: "nodejs" };

@@ -7,7 +7,7 @@
  * does not belong in a unit test.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import handler from "../api/index.ts";
+import handler from "../packages/store/src/vercel.ts";
 
 const original = { ...process.env };
 

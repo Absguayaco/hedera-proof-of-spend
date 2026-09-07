@@ -21,8 +21,7 @@
     "packages/**/*.ts",
     "scripts/**/*.ts",
     "scripts/**/*.mjs",
-    "__tests__/**/*.ts",
-    "api/**/*.ts"
+    "__tests__/**/*.ts"
   ],
   "exclude": [
     "node_modules",

@@ -62,6 +62,15 @@ properties are not, and would silently reintroduce the need for a build step.
 If the store's deploy target later wants a single bundled artifact, that is a
 reason to bring esbuild back for `packages/store` alone — not for the repo.
 
+**That happened.** The first Vercel deployment failed at runtime with
+`ERR_MODULE_NOT_FOUND: /var/task/packages/store/src/config.ts`. Vercel
+transpiles a function's own file but does not follow relative `.ts` imports into
+other workspace packages, so the deployed function referenced files that were
+never uploaded. `npm run build` now bundles `packages/store/src/vercel.ts` into
+`api/index.js` with esbuild, and `vercel.json` runs it. Exactly one artifact,
+for exactly one deploy target: local development, tests and CI still run the
+sources with no build step. `api/index.js` is generated and gitignored.
+
 ## Decision: the two hash implementations are duplicated on purpose
 
 `packages/anchor/src/hash.ts` and `packages/verifier/src/hash.ts` implement the

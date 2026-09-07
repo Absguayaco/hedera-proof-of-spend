@@ -3,3 +3,6 @@ node_modules/
 .env.local
 *.log
 .DS_Store
+
+# built only for the Vercel deploy target
+api/index.js
