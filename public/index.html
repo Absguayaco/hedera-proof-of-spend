@@ -97,6 +97,11 @@
 
   .receipt-item-price small { color: var(--text-subdued); display: block; font-size: .75em; }
 
+  @media (max-width: 26rem) {
+    .receipt-item { display: block; }
+    .receipt-item-price { margin-top: .35rem; text-align: left; }
+  }
+
   /* API reference */
   .endpoints { display: grid; gap: .75rem; margin: 0 0 2rem; }
 
@@ -107,7 +112,7 @@
     padding: .9rem 1rem;
   }
 
-  .endpoint code { color: var(--link); font-weight: 600; }
+  .endpoint > code { color: var(--link); font-weight: 600; }
   .endpoint p { color: var(--text-subdued); margin: .35rem 0 0; }
 
   footer {
