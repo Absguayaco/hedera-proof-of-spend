@@ -4,7 +4,7 @@
   "outputDirectory": "public",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!api(?:/|$)).*)",
       "destination": "/api"
     }
   ]
