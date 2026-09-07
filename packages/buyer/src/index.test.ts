@@ -72,11 +72,17 @@ describe("buyResource", () => {
   });
 
   it("refuses to pay when the store quotes a network other than hedera:testnet, before any payment is created", async () => {
-    const fetchImpl = (async () => paymentRequiredResponse("hedera:mainnet")) as typeof fetch;
+    let callCount = 0;
+    const fetchImpl = (async () => {
+      callCount += 1;
+      return paymentRequiredResponse("hedera:mainnet");
+    }) as typeof fetch;
 
     await expect(
       buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
     ).rejects.toThrow(/Refusing to pay/);
+
+    expect(callCount).toBe(1);
   });
 
   it("surfaces the facilitator's reason when settlement fails", async () => {

@@ -52,10 +52,27 @@ export async function buyResource(
   // x402Client's default spend controls only allow the network's "default
   // asset" (USDC on hedera:testnet, per @x402/hedera's DEFAULT_ASSETS table)
   // — native HBAR would be rejected before assertChallengeNetwork ever runs.
-  // This package's actual safety gate is assertChallengeNetwork, not the
-  // SDK's generic multi-asset allowlist, so that allowlist is disabled here.
+  // Scoped to exactly this network and asset, with an explicit atomic cap,
+  // rather than disabling spend controls outright: `setSpendControls(false)`
+  // would also forfeit the ability to cap the payment at all, since HBAR was
+  // never a recognized "default asset" the SDK's own $1 cap applies to in
+  // the first place — it was simply blocked, not capped. This cap is a
+  // backstop against a malicious or misbehaving store quoting an absurd
+  // amount; it is deliberately generous relative to this store's menu
+  // (packages/store/src/menu.ts tops out at 0.35 HBAR) rather than coupled
+  // to it — this package is seller-agnostic and must not know a specific
+  // store's catalogue.
+  const MAX_TINYBAR_PER_PAYMENT = "100000000"; // 1 HBAR
   const client = new x402Client()
-    .setSpendControls(false)
+    .setSpendControls({
+      allowedAssets: [
+        {
+          network: ALLOWED_X402_NETWORK,
+          asset: "0.0.0",
+          maxAmountPerPayment: MAX_TINYBAR_PER_PAYMENT,
+        },
+      ],
+    })
     .register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
   const httpClient = new x402HTTPClient(client);
 
