@@ -99,6 +99,18 @@ agent cannot find out what anything costs without paying first. Every
 `GET /buy/<slug>` is gated and answers 402 with a challenge quoting native HBAR
 (asset `0.0.0`) in tinybar.
 
+### Buying something by hand
+
+    HEDERA_OPERATOR_ID=0.0.<your account> \
+    HEDERA_OPERATOR_KEY=<your private key> \
+    npm run buy -- espresso
+
+Buys one item — `espresso`, `flat-white`, or `cold-brew` — from the hosted
+store by default, pays the 402 challenge in HBAR, and prints what it paid,
+the transaction id, and a HashScan link. Set `STORE_URL` to buy from a
+locally-run store instead. No receipt is filed and nothing is anchored to
+HCS — this is the buy step on its own, not the full walkthrough.
+
 ## Deploying the store
 
 The store runs on Vercel as a single function. `api/index.ts` is the entry

@@ -94,10 +94,12 @@ Mirrors the shape of `packages/verifier/src/cli.ts`.
 - Invocation: `npm run buy -- [slug]`. `slug` is optional and defaults to
   `espresso` (the cheapest item, so a bare `npm run buy` always works against
   a freshly-started store).
-- Target is hardcoded to `http://localhost:8402/buy/<slug>` — no `STORE_URL`
-  override in this CLI. (`STORE_URL` as documented in `.env.example` is for
-  the future e2e script's hosted-by-default behavior; conflating the two
-  would make this CLI's target ambiguous.)
+- Target defaults to the hosted store
+  (`https://hedera-proof-of-spend-store.vercel.app`, matching `.env.example`'s
+  documented `STORE_URL` default) and reads `STORE_URL` as an override — so
+  `npm run buy` needs no local setup beyond testnet credentials, the same way
+  `npm run verify` needs none. Set `STORE_URL=http://localhost:8402` to buy
+  against a locally-run store instead.
 - Reads `HEDERA_OPERATOR_ID` and `HEDERA_OPERATOR_KEY` from `process.env`,
   required, same convention as the rest of the repo (fail loudly, name the
   missing variable, point at `.env.example`).
@@ -160,6 +162,3 @@ Following the existing pattern (`guard.test.ts` — pure functions, no network):
 - Receipt filing to askReceipts.
 - HCS anchoring, verification, HashScan cross-check as an automated step.
 - Cross-rail spend total.
-- Buying against the hosted Vercel deployment.
-- A `STORE_URL` override flag on this CLI (revisit once the e2e script needs
-  the hosted-by-default behavior `.env.example` already documents).
