@@ -19,8 +19,8 @@ export interface HederaSettlement {
 
 const TX_ID = /^(\d+\.\d+\.\d+)@(\d+)\.(\d+)$/;
 
-// TODO: implement. Reject anything not matching TX_ID rather than coercing —
-// a malformed settlement reference must fail loudly, not file a bad receipt.
+// Reject anything not matching TX_ID rather than coercing — a malformed
+// settlement reference must fail loudly, not file a bad receipt.
 export function parseSettlement(raw: string): HederaSettlement {
   const match = TX_ID.exec(raw);
   if (!match) {

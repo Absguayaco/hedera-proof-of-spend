@@ -1,7 +1,7 @@
 # Manual buy from the store
 
 **Date:** 2026-09-07
-**Status:** approved, not yet implemented
+**Status:** implemented
 
 ## Why
 

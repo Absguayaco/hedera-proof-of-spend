@@ -13,7 +13,10 @@ function encodeHeader(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64");
 }
 
-function paymentRequiredResponse(network: `${string}:${string}`): Response {
+function paymentRequiredResponse(
+  network: `${string}:${string}`,
+  overrides: Partial<PaymentRequired["accepts"][number]> = {},
+): Response {
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
     resource: { url: URL },
@@ -31,6 +34,7 @@ function paymentRequiredResponse(network: `${string}:${string}`): Response {
         // address; see packages/store/src/preflight.test.ts's fixtures for
         // the same field).
         extra: { feePayer: FACILITATOR_ID },
+        ...overrides,
       },
     ],
   };
@@ -81,6 +85,34 @@ describe("buyResource", () => {
     await expect(
       buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
     ).rejects.toThrow(/Refusing to pay/);
+
+    expect(callCount).toBe(1);
+  });
+
+  it("refuses to pay when the store quotes a non-HBAR asset on the right network, before any payment is created", async () => {
+    let callCount = 0;
+    const fetchImpl = (async () => {
+      callCount += 1;
+      return paymentRequiredResponse("hedera:testnet", { asset: "0.0.456858" });
+    }) as typeof fetch;
+
+    await expect(
+      buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
+    ).rejects.toThrow(/quoted asset "0\.0\.456858"/);
+
+    expect(callCount).toBe(1);
+  });
+
+  it("refuses to pay when the store quotes a scheme other than exact", async () => {
+    let callCount = 0;
+    const fetchImpl = (async () => {
+      callCount += 1;
+      return paymentRequiredResponse("hedera:testnet", { scheme: "upto" });
+    }) as typeof fetch;
+
+    await expect(
+      buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
+    ).rejects.toThrow(/quoted scheme "upto"/);
 
     expect(callCount).toBe(1);
   });

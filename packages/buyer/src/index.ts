@@ -45,6 +45,32 @@ export async function buyResource(
   request: BuyRequest,
   fetchImpl: typeof fetch = fetch,
 ): Promise<BuyResult> {
+  const challenge = await fetchImpl(request.url);
+  if (challenge.status !== 402) {
+    throw new Error(`expected 402 from ${request.url}, got ${challenge.status}`);
+  }
+
+  const challengeBody = await challenge.json().catch(() => undefined);
+  const paymentRequired: PaymentRequired = new x402HTTPClient(
+    new x402Client(),
+  ).getPaymentRequiredResponse((name) => challenge.headers.get(name), challengeBody);
+
+  const [quoted] = paymentRequired.accepts;
+  if (!quoted) {
+    throw new Error(`${request.url} did not quote a price`);
+  }
+  // The challenge is what actually decides where the money goes and what it
+  // buys, so it is checked before any signer is built or key material is
+  // used — not just against whatever network the SDK happens to be
+  // configured for, but against this package's one supported rail.
+  assertChallengeNetwork(quoted.network);
+  if (quoted.asset !== "0.0.0") {
+    throw new Error(`store quoted asset "${quoted.asset}", not native HBAR (0.0.0)`);
+  }
+  if (quoted.scheme !== "exact") {
+    throw new Error(`store quoted scheme "${quoted.scheme}", not "exact"`);
+  }
+
   const signer = createClientHederaSigner(
     request.operatorId,
     PrivateKey.fromString(request.operatorKey),
@@ -76,27 +102,13 @@ export async function buyResource(
     .register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
   const httpClient = new x402HTTPClient(client);
 
-  const challenge = await fetchImpl(request.url);
-  if (challenge.status !== 402) {
-    throw new Error(`expected 402 from ${request.url}, got ${challenge.status}`);
-  }
-
-  const challengeBody = await challenge.json().catch(() => undefined);
-  const paymentRequired: PaymentRequired = httpClient.getPaymentRequiredResponse(
-    (name) => challenge.headers.get(name),
-    challengeBody,
-  );
-
-  const [quoted] = paymentRequired.accepts;
-  if (!quoted) {
-    throw new Error(`${request.url} did not quote a price`);
-  }
-  // Before any signer or key material is touched: the challenge is what
-  // actually decides where the money goes, so it is checked separately from
-  // whatever network the SDK happens to be configured for.
-  assertChallengeNetwork(quoted.network);
-
-  const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+  // Narrowed to just the entry the guard above validated, so the SDK cannot
+  // select and pay a different `accepts[]` entry than the one
+  // `amountTinybar` below is read from.
+  const paymentPayload = await httpClient.createPaymentPayload({
+    ...paymentRequired,
+    accepts: [quoted],
+  });
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
 
   const paid = await fetchImpl(request.url, { headers: paymentHeaders });
@@ -119,7 +131,13 @@ export async function buyResource(
 
   const settlement = parseSettlement(settleResponse.transaction);
   const amountTinybar = BigInt(quoted.amount);
-  const body = await paid.json();
+  const body = await paid.json().catch((error: unknown) => {
+    throw new Error(
+      `store returned an unparseable body after a successful payment (status ${paid.status}, ` +
+        `transaction ${settlement.transactionId}): ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  });
 
   return { body, amountTinybar, settlement };
 }

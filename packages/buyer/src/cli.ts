@@ -6,7 +6,7 @@
  * walkthrough. This exists so a real purchase can be exercised and verified
  * on its own, against either the hosted store or a local one.
  */
-import { buyResource, hashscanUrl } from "./index.ts";
+import { assertTestnet, buyResource, hashscanUrl } from "./index.ts";
 
 const DEFAULT_STORE_URL = "https://hedera-proof-of-spend-store.vercel.app";
 const DEFAULT_SLUG = "espresso";
@@ -43,6 +43,8 @@ async function main(): Promise<void> {
   const slug = process.argv[2] ?? DEFAULT_SLUG;
   const operatorId = requireEnv("HEDERA_OPERATOR_ID");
   const operatorKey = requireEnv("HEDERA_OPERATOR_KEY");
+
+  assertTestnet(process.env.HEDERA_NETWORK);
 
   const result = await buyResource({
     url: `${storeUrl()}/buy/${slug}`,
