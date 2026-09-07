@@ -13,7 +13,7 @@
     "npm": ">=11.10.0"
   },
   "scripts": {
-    "preinstall": "node scripts/check-npm-version.mjs",
+    "preinstall": "node scripts/check-runtime.mjs",
     "build": "node scripts/build-vercel.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
