@@ -102,6 +102,48 @@ describe("verify", () => {
     expect(result.outcome).toBe("missing");
   });
 
+  it("skips a message that decodes to JSON null instead of throwing", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          messages: [
+            {
+              message: Buffer.from("null").toString("base64"),
+              consensus_timestamp: "1.1",
+              sequence_number: 1,
+            },
+          ],
+          links: { next: null },
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+
+    const result = await verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl);
+
+    expect(result.outcome).toBe("missing");
+  });
+
+  it("skips a message that decodes to a JSON array instead of throwing", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          messages: [
+            {
+              message: Buffer.from("[1,2,3]").toString("base64"),
+              consensus_timestamp: "1.1",
+              sequence_number: 1,
+            },
+          ],
+          links: { next: null },
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+
+    const result = await verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl);
+
+    expect(result.outcome).toBe("missing");
+  });
+
   it("surfaces a mirror node error rather than silently reporting missing", async () => {
     const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
 

@@ -72,19 +72,22 @@ export async function verify(
     const parsedPage = (await response.json()) as MirrorMessagesPage;
 
     for (const entry of parsedPage.messages) {
-      let decoded: { h?: unknown };
       try {
-        decoded = JSON.parse(Buffer.from(entry.message, "base64").toString("utf8"));
+        const decoded: unknown = JSON.parse(Buffer.from(entry.message, "base64").toString("utf8"));
+        if (
+          decoded !== null &&
+          typeof decoded === "object" &&
+          (decoded as { h?: unknown }).h === computedHash
+        ) {
+          return {
+            outcome: "match",
+            computedHash,
+            consensusTimestamp: entry.consensus_timestamp,
+            hashscanUrl: `https://hashscan.io/${network}/topic/${opts.topicId}/messages`,
+          };
+        }
       } catch {
-        continue; // not our JSON shape — skip rather than fail the whole scan
-      }
-      if (decoded.h === computedHash) {
-        return {
-          outcome: "match",
-          computedHash,
-          consensusTimestamp: entry.consensus_timestamp,
-          hashscanUrl: `https://hashscan.io/${network}/topic/${opts.topicId}/messages`,
-        };
+        // not our JSON shape — skip rather than fail the whole scan
       }
     }
 
