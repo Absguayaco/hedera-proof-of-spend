@@ -118,6 +118,19 @@ describe("anchorReceipt", () => {
     expect(result.error).not.toContain(OPERATOR_KEY);
   });
 
+  it("never throws: an invalid operator id becomes {ok:false, error}, not a rejected promise", async () => {
+    // Client.forTestnet().setOperator(operatorId, ...) parses operatorId
+    // synchronously and throws for a malformed id — this must be caught by
+    // the same try/finally as everything else, not escape as a rejection.
+    await expect(
+      anchorReceipt(
+        RECEIPT,
+        { operatorId: "not-an-account-id", operatorKey: OPERATOR_KEY },
+        fakeHcs(),
+      ),
+    ).resolves.toMatchObject({ ok: false, hash: hashReceipt(RECEIPT) });
+  });
+
   it("never throws: a receipt that fails canonicalization becomes {ok:false, error}, empty hash", async () => {
     const result = await anchorReceipt(
       { n: 1 }, // numbers are rejected by the canonicalization rule

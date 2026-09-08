@@ -66,9 +66,19 @@ export async function anchorReceipt(
     };
   }
 
-  const client = Client.forTestnet().setOperator(opts.operatorId, operatorKey);
+  // client is constructed *inside* the try below, not before it: Client.forTestnet()
+  // alone already schedules the network-update timers that need closing (verified
+  // empirically — a process that only calls Client.forTestnet() and never closes it
+  // hangs indefinitely), and .setOperator() throws synchronously for a malformed
+  // operatorId. Both must be covered by the same try/finally so (a) a bad
+  // operatorId becomes {ok:false, error} rather than a rejected promise, and
+  // (b) the client Client.forTestnet() already constructed still gets closed
+  // even when the immediately-following .setOperator() call is what throws.
+  let client: Client | undefined;
   try {
     try {
+      client = Client.forTestnet();
+      client.setOperator(opts.operatorId, operatorKey);
       const topicId = opts.topicId ?? (await hcs.createTopic(client));
       try {
         await hcs.submitHash(client, topicId, hash);
@@ -93,12 +103,17 @@ export async function anchorReceipt(
     }
   } finally {
     // Client.forTestnet() schedules network-update timers that keep the
-    // event loop alive until closed. Best-effort teardown: a close() failure
-    // must never override the result already computed above.
-    try {
-      client.close();
-    } catch {
-      // ignored on purpose
+    // event loop alive until closed. client may be undefined if
+    // Client.forTestnet() itself threw (not observed in practice, but
+    // guarded regardless — there is nothing to close in that case).
+    // Best-effort teardown: a close() failure must never override the
+    // result already computed above.
+    if (client) {
+      try {
+        client.close();
+      } catch {
+        // ignored on purpose
+      }
     }
   }
 }
