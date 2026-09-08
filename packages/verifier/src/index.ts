@@ -1,3 +1,5 @@
+import { hashReceipt } from "./hash.ts";
+
 /**
  * An independent verifier.
  *
@@ -28,15 +30,75 @@ export interface VerifyResult {
   readonly hashscanUrl?: string;
 }
 
-// TODO: implement.
-//   1. hashReceipt() the receipt with THIS package's own implementation
-//   2. query the topic via the public mirror node
-//   3. match / missing / altered
+/** Confirmed live (2026-09-08): the mirror node's public REST base URLs. Not
+ *  imported from @x402/hedera on purpose — see this package's package.json:
+ *  the dependency list is the claim. */
+const MIRROR_NODE_URL: Record<string, string> = {
+  testnet: "https://testnet.mirrornode.hedera.com",
+  mainnet: "https://mainnet-public.mirrornode.hedera.com",
+};
+
+interface MirrorMessage {
+  readonly message: string; // base64
+  readonly consensus_timestamp: string;
+}
+
+interface MirrorMessagesPage {
+  readonly messages: readonly MirrorMessage[];
+  readonly links: { readonly next: string | null };
+}
+
 export async function verify(
-  _receipt: unknown,
-  _opts: { topicId: string; network?: string },
+  receipt: unknown,
+  opts: { topicId: string; network?: string },
+  fetchImpl: typeof fetch = fetch,
 ): Promise<VerifyResult> {
-  throw new Error("not implemented");
+  const computedHash = hashReceipt(receipt);
+  const network = opts.network ?? "testnet";
+  const base = MIRROR_NODE_URL[network];
+  if (!base) {
+    throw new Error(`Unsupported network "${network}". Expected "testnet" or "mainnet".`);
+  }
+
+  let path: string | null = `/api/v1/topics/${opts.topicId}/messages?limit=100`;
+  while (path) {
+    const response = await fetchImpl(`${base}${path}`);
+    if (!response.ok) {
+      throw new Error(
+        `Mirror node returned ${response.status} for topic ${opts.topicId}. ` +
+          `Check the topic id and network.`,
+      );
+    }
+    const parsedPage = (await response.json()) as MirrorMessagesPage;
+
+    for (const entry of parsedPage.messages) {
+      let decoded: { h?: unknown };
+      try {
+        decoded = JSON.parse(Buffer.from(entry.message, "base64").toString("utf8"));
+      } catch {
+        continue; // not our JSON shape — skip rather than fail the whole scan
+      }
+      if (decoded.h === computedHash) {
+        return {
+          outcome: "match",
+          computedHash,
+          consensusTimestamp: entry.consensus_timestamp,
+          hashscanUrl: `https://hashscan.io/${network}/topic/${opts.topicId}/messages`,
+        };
+      }
+    }
+
+    // links.next is a relative path, not an absolute URL — confirmed live.
+    path = parsedPage.links.next;
+  }
+
+  // A hash with no matching message could mean "never anchored" or "anchored
+  // for a different version of this receipt, now altered" — but AnchorMessage
+  // carries only {v, h}, no receipt id or other correlator (a deliberate
+  // privacy choice: "the topic alone tells an observer nothing"). Without a
+  // correlator those two cases are indistinguishable from a topic scan, so
+  // "altered" is not reachable here; every non-match reports "missing".
+  return { outcome: "missing", computedHash };
 }
 
 export { hashReceipt, canonicalize, HASH_VERSION } from "./hash.ts";
