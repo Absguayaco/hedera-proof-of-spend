@@ -25,6 +25,11 @@ export {}; // module scope — without this, `main` would collide with the verif
 // and MPP receipts. That is a seeding task, not a build task, and it is on the
 // critical path. If the account will not be seeded, CUT step 7 rather than
 // print a one-rail total and call it cross-rail.
+//
+// Steps 1-2 are expected to be implemented via decideAndBuy()
+// (scripts/decide-and-buy.ts), which anchors the budget decision to HCS
+// before payment executes, rather than treating check_budget and buy as
+// independent, sequential steps.
 
 async function main(): Promise<void> {
   throw new Error("not implemented");

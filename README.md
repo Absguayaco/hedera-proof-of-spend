@@ -206,9 +206,14 @@ and the hash is the SHA-256 of those bytes.
 - **HCS proves integrity, not truth.** A ledger that files a wrong receipt and
   anchors it has anchored a wrong receipt, immutably. This narrows what you have
   to trust; it does not eliminate it.
-- **The budget guard is advisory, by construction.** The customer runs the
-  buying agent, so it can ask permission, be refused, and buy anyway. What the
-  ledger does is record the refusal. This observes accurately; it does not prevent.
+- **The budget guard is advisory for `npm run buy`, and preventive for
+  `decideAndBuy()`.** The customer runs the agent, so a direct call to
+  `buyResource()` can be refused and used anyway — the ledger only records
+  the refusal. `decideAndBuy()` (`scripts/decide-and-buy.ts`) is stricter: it
+  anchors the spend decision to HCS *before* paying, and settles nothing
+  unless that anchor reaches consensus with an approved verdict — a decline
+  is anchored with the same rigor as an approval, not just recorded after
+  the fact.
 - **Anchoring is best-effort.** If HCS is unreachable the purchase still
   completes and the receipt is still filed. An unanchored receipt is worth more
   than a lost one, and it is visibly unanchored — the correct failure mode.
