@@ -102,14 +102,20 @@ describe("anchorReceipt", () => {
   });
 
   it("never throws: an invalid operator key becomes {ok:false, error}", async () => {
+    const INVALID_KEY = "not-a-key";
     const result = await anchorReceipt(
       RECEIPT,
-      { operatorId: OPERATOR_ID, operatorKey: "not-a-key" },
+      { operatorId: OPERATOR_ID, operatorKey: INVALID_KEY },
       fakeHcs(),
     );
 
     expect(result.ok).toBe(false);
     expect(result.error).toBeTruthy();
+    // The invalid key must never be echoed back in the error — that's how a
+    // near-valid secret would leak into logs. PrivateKey.fromString's own
+    // error message includes its input verbatim, so this is not academic.
+    expect(result.error).not.toContain(INVALID_KEY);
+    expect(result.error).not.toContain(OPERATOR_KEY);
   });
 
   it("never throws: a receipt that fails canonicalization becomes {ok:false, error}, empty hash", async () => {

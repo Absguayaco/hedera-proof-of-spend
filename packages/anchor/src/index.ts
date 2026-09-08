@@ -48,26 +48,58 @@ export async function anchorReceipt(
     return { ok: false, hash: "", error: describeError(error) };
   }
 
+  // Parsed in its own try/catch, separate from the network-facing operations
+  // below, so a bad key never reaches a catch block that echoes error
+  // messages back to the caller: PrivateKey.fromString's own error message
+  // includes the raw input verbatim, and that input is (almost) the secret.
+  let operatorKey: PrivateKey;
   try {
-    const client = Client.forTestnet().setOperator(
-      opts.operatorId,
-      PrivateKey.fromString(opts.operatorKey),
-    );
-    const topicId = opts.topicId ?? (await hcs.createTopic(client));
+    operatorKey = PrivateKey.fromString(opts.operatorKey);
+  } catch {
+    return {
+      ok: false,
+      hash,
+      error:
+        `HEDERA_OPERATOR_KEY is not a valid Hedera private key ` +
+        `(${opts.operatorKey.length} characters). See .env.example. ` +
+        `The key itself is not reported here on purpose.`,
+    };
+  }
+
+  const client = Client.forTestnet().setOperator(opts.operatorId, operatorKey);
+  try {
     try {
-      await hcs.submitHash(client, topicId, hash);
+      const topicId = opts.topicId ?? (await hcs.createTopic(client));
+      try {
+        await hcs.submitHash(client, topicId, hash);
+      } catch (error) {
+        // A topic may already exist even though submission failed — report it
+        // so a retry reuses it instead of creating (and leaking) a new one.
+        return { ok: false, hash, topicId, error: describeError(error) };
+      }
+      return { ok: true, hash, topicId };
     } catch (error) {
-      // A topic may already exist even though submission failed — report it
-      // so a retry reuses it instead of creating (and leaking) a new one.
-      return { ok: false, hash, topicId, error: describeError(error) };
+      // Anchoring is best-effort: a failed anchor must never block a purchase.
+      // The hash is still reported so the caller can retry or log it. If the
+      // caller supplied a topicId, echo it back — createTopic is what failed
+      // here, not the topic the caller already had. No topic id was newly
+      // obtained in that case.
+      return {
+        ok: false,
+        hash,
+        ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
+        error: describeError(error),
+      };
     }
-    return { ok: true, hash, topicId };
-  } catch (error) {
-    // Anchoring is best-effort: a failed anchor must never block a purchase.
-    // The hash is still reported so the caller can retry or log it. No
-    // topicId is available here: client/key construction or createTopic
-    // itself is what failed.
-    return { ok: false, hash, error: describeError(error) };
+  } finally {
+    // Client.forTestnet() schedules network-update timers that keep the
+    // event loop alive until closed. Best-effort teardown: a close() failure
+    // must never override the result already computed above.
+    try {
+      client.close();
+    } catch {
+      // ignored on purpose
+    }
   }
 }
 

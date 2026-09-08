@@ -55,10 +55,13 @@ export async function verify(
 ): Promise<VerifyResult> {
   const computedHash = hashReceipt(receipt);
   const network = opts.network ?? "testnet";
-  const base = MIRROR_NODE_URL[network];
-  if (!base) {
+  // Object.hasOwn guards against inherited Object.prototype members
+  // ("toString", "constructor", "valueOf", ...) being read back as a truthy
+  // "known network" when network comes straight from --network / env.
+  if (!Object.hasOwn(MIRROR_NODE_URL, network)) {
     throw new Error(`Unsupported network "${network}". Expected "testnet" or "mainnet".`);
   }
+  const base = MIRROR_NODE_URL[network];
 
   let path: string | null = `/api/v1/topics/${opts.topicId}/messages?limit=100`;
   while (path) {
@@ -69,7 +72,13 @@ export async function verify(
           `Check the topic id and network.`,
       );
     }
-    const parsedPage = (await response.json()) as MirrorMessagesPage;
+    const parsedPage = (await response.json()) as Partial<MirrorMessagesPage>;
+    if (!Array.isArray(parsedPage?.messages)) {
+      throw new Error(
+        `Mirror node returned 200 but not a topic-messages page for topic ` +
+          `${opts.topicId} on ${network}. Got: ${JSON.stringify(parsedPage).slice(0, 200)}`,
+      );
+    }
 
     for (const entry of parsedPage.messages) {
       try {
@@ -92,7 +101,8 @@ export async function verify(
     }
 
     // links.next is a relative path, not an absolute URL — confirmed live.
-    path = parsedPage.links.next;
+    // Optional chaining in case links itself is missing from a malformed page.
+    path = parsedPage.links?.next ?? null;
   }
 
   // A hash with no matching message could mean "never anchored" or "anchored

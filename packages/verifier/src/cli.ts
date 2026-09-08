@@ -32,14 +32,18 @@ function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv): Args {
     );
   }
 
-  const resolvedTopicId = topicId ?? env.HCS_TOPIC_ID?.trim();
+  const resolvedTopicId = topicId || env.HCS_TOPIC_ID?.trim() || undefined;
   if (!resolvedTopicId) {
     throw new Error(
       "No topic to check against: pass --topic 0.0.<id> or set HCS_TOPIC_ID. See .env.example.",
     );
   }
 
-  return { receiptPath, topicId: resolvedTopicId, network: network ?? env.HEDERA_NETWORK?.trim() };
+  return {
+    receiptPath,
+    topicId: resolvedTopicId,
+    network: network || env.HEDERA_NETWORK?.trim() || undefined,
+  };
 }
 
 async function main(): Promise<void> {

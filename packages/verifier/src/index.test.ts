@@ -149,4 +149,27 @@ describe("verify", () => {
 
     await expect(verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl)).rejects.toThrow(/500/);
   });
+
+  it("throws a message naming the topic id when a 200 response isn't a messages page", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: "not found" }), { status: 200 })) as typeof fetch;
+
+    await expect(verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl)).rejects.toThrow(/0\.0\.777/);
+  });
+
+  it("throws that same shape error for an empty object body, instead of a raw TypeError", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({}), { status: 200 })) as typeof fetch;
+
+    await expect(verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl)).rejects.toThrow(
+      /not a topic-messages page/,
+    );
+  });
+
+  it('rejects a "network" value inherited from Object.prototype instead of bypassing the guard', async () => {
+    const fetchImpl = (async () => page([])) as typeof fetch;
+
+    await expect(
+      verify(RECEIPT, { topicId: "0.0.1", network: "toString" }, fetchImpl),
+    ).rejects.toThrow(/Unsupported network "toString"/);
+  });
 });
