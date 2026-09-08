@@ -79,6 +79,28 @@ describe("anchorReceipt", () => {
     expect(result.hash).toBe(hashReceipt(RECEIPT));
   });
 
+  it("reports the newly created topicId when submitHash fails, so a retry can reuse it", async () => {
+    const hcs = fakeHcs({
+      createTopic: async () => "0.0.777",
+      submitHash: async () => {
+        throw new Error("mirror node unreachable");
+      },
+    });
+
+    const result = await anchorReceipt(
+      RECEIPT,
+      { operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY },
+      hcs,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      hash: hashReceipt(RECEIPT),
+      topicId: "0.0.777",
+      error: expect.stringMatching(/mirror node unreachable/),
+    });
+  });
+
   it("never throws: an invalid operator key becomes {ok:false, error}", async () => {
     const result = await anchorReceipt(
       RECEIPT,

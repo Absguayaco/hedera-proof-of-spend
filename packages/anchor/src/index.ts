@@ -54,11 +54,19 @@ export async function anchorReceipt(
       PrivateKey.fromString(opts.operatorKey),
     );
     const topicId = opts.topicId ?? (await hcs.createTopic(client));
-    await hcs.submitHash(client, topicId, hash);
+    try {
+      await hcs.submitHash(client, topicId, hash);
+    } catch (error) {
+      // A topic may already exist even though submission failed — report it
+      // so a retry reuses it instead of creating (and leaking) a new one.
+      return { ok: false, hash, topicId, error: describeError(error) };
+    }
     return { ok: true, hash, topicId };
   } catch (error) {
     // Anchoring is best-effort: a failed anchor must never block a purchase.
-    // The hash is still reported so the caller can retry or log it.
+    // The hash is still reported so the caller can retry or log it. No
+    // topicId is available here: client/key construction or createTopic
+    // itself is what failed.
     return { ok: false, hash, error: describeError(error) };
   }
 }
