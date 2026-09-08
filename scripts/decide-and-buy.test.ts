@@ -16,22 +16,37 @@ const REQUEST = {
   operatorKey: "fake-operator-key",
 };
 
-function approve(overrides: Partial<Awaited<ReturnType<CheckBudget>>> = {}): CheckBudget {
-  return async () => ({ verdict: "approved", budgetRuleId: "daily-cap", ...overrides });
+function approve(
+  overrides: Partial<Awaited<ReturnType<CheckBudget>>> = {},
+  calls: unknown[] = [],
+): CheckBudget & { calls: unknown[] } {
+  const fn = (async (request: unknown) => {
+    calls.push(request);
+    return { verdict: "approved", budgetRuleId: "daily-cap", ...overrides };
+  }) as CheckBudget & { calls: unknown[] };
+  fn.calls = calls;
+  return fn;
 }
 
-function decline(reason = "over the daily cap"): CheckBudget {
-  return async () => ({ verdict: "declined", budgetRuleId: "daily-cap", reason });
+function decline(reason = "over the daily cap", calls: unknown[] = []): CheckBudget & { calls: unknown[] } {
+  const fn = (async (request: unknown) => {
+    calls.push(request);
+    return { verdict: "declined", budgetRuleId: "daily-cap", reason };
+  }) as CheckBudget & { calls: unknown[] };
+  fn.calls = calls;
+  return fn;
 }
 
 function fakeAnchor(result: AnchorResult, order: string[] = []) {
   const received: unknown[] = [];
-  const impl = (async (receipt: unknown) => {
+  const opts: unknown[] = [];
+  const impl = (async (receipt: unknown, anchorOpts: unknown) => {
     received.push(receipt);
+    opts.push(anchorOpts);
     order.push("anchor");
     return result;
   }) as Parameters<typeof decideAndBuy>[2];
-  return { impl, received, order };
+  return { impl, received, opts, order };
 }
 
 function fakeBuy(result: BuyResult | Error, order: string[] = []) {
@@ -95,8 +110,9 @@ describe("decideAndBuy", () => {
     const order: string[] = [];
     const anchor = fakeAnchor(OK_ANCHOR, order);
     const buy = fakeBuy(PURCHASE, order);
+    const budget = approve();
 
-    const result = await decideAndBuy(REQUEST, approve(), anchor.impl, buy.impl);
+    const result = await decideAndBuy(REQUEST, budget, anchor.impl, buy.impl);
 
     expect(result.outcome).toBe("purchased");
     expect(result.anchor).toEqual(OK_ANCHOR);
@@ -110,8 +126,58 @@ describe("decideAndBuy", () => {
       operatorId: REQUEST.operatorId,
       operatorKey: REQUEST.operatorKey,
     });
+    // checkBudget is called with exactly {agent, resource} — nothing else
+    // leaks in, and nothing it needs is dropped.
+    expect(budget.calls).toHaveLength(1);
+    expect(budget.calls[0]).toEqual({ agent: REQUEST.agent, resource: REQUEST.resource });
     // Anchor-then-pay, not the other way around.
     expect(order).toEqual(["anchor", "buy"]);
+  });
+
+  it("forwards request.topicId to the anchor call unchanged", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const buy = fakeBuy(PURCHASE);
+    const requestWithTopic = { ...REQUEST, topicId: "0.0.55555" };
+
+    await decideAndBuy(requestWithTopic, approve(), anchor.impl, buy.impl);
+
+    expect(anchor.opts).toHaveLength(1);
+    expect((anchor.opts[0] as { topicId?: string }).topicId).toBe("0.0.55555");
+  });
+
+  it("fails closed on a verdict it doesn't recognize, rather than buying", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const buy = fakeBuy(PURCHASE);
+    // Simulates what a real, not-yet-written, unverified MCP adapter could
+    // actually hand this function — cast past the type system on purpose,
+    // since CheckBudget's own response is untrusted at runtime.
+    const unrecognized: CheckBudget = async () =>
+      ({ verdict: "needs_approval" }) as unknown as Awaited<ReturnType<CheckBudget>>;
+
+    const result = await decideAndBuy(REQUEST, unrecognized, anchor.impl, buy.impl);
+
+    expect(result.outcome).toBe("declined");
+    expect(buy.calls).toHaveLength(0);
+  });
+
+  it("guards the checkBudget call itself: a rejection is decorated and nothing is anchored or bought", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const buy = fakeBuy(PURCHASE);
+    const budgetError = new Error("budget service timed out");
+    const failingBudget: CheckBudget = async () => {
+      throw budgetError;
+    };
+
+    const attempt = decideAndBuy(REQUEST, failingBudget, anchor.impl, buy.impl);
+
+    await expect(attempt).rejects.toThrow(/Refusing to buy/);
+    await expect(attempt).rejects.toThrow(/budget service timed out/);
+    await attempt.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toBe(budgetError);
+    });
+    expect(anchor.received).toHaveLength(0);
+    expect(buy.calls).toHaveLength(0);
   });
 
   it("generates a fresh nonce and an ISO decidedAt timestamp on every call", async () => {

@@ -71,7 +71,17 @@ export async function decideAndBuy(
   anchorReceiptImpl: typeof anchorReceipt = anchorReceipt,
   buyResourceImpl: typeof buyResource = buyResource,
 ): Promise<DecideAndBuyResult> {
-  const budget = await checkBudget({ agent: request.agent, resource: request.resource });
+  let budget: BudgetCheckResponse;
+  try {
+    budget = await checkBudget({ agent: request.agent, resource: request.resource });
+  } catch (error) {
+    throw new Error(
+      `Refusing to buy: the budget check for ${request.agent} on ${request.resource} failed, ` +
+        `so no decision was anchored and nothing was bought: ` +
+        (error instanceof Error ? error.message : String(error)),
+      { cause: error },
+    );
+  }
 
   const decision: Decision = {
     agent: request.agent,
@@ -106,8 +116,11 @@ export async function decideAndBuy(
     };
   }
 
-  if (decision.verdict === "declined") {
-    // E2: a decline settles nothing.
+  if (decision.verdict !== "approved") {
+    // Inverted, not `=== "declined"`: checkBudget's response is untrusted
+    // (see CheckBudget's doc comment), so anything that isn't exactly
+    // "approved" is treated as a refusal — never the reverse. E2: a decline
+    // (or an unrecognized verdict) settles nothing.
     return { outcome: "declined", decision, anchor };
   }
 
