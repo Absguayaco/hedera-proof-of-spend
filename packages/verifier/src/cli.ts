@@ -8,6 +8,13 @@
 import { readFile } from "node:fs/promises";
 import { verify } from "./index.ts";
 
+/** The topic this demo anchors to when HCS_TOPIC_ID isn't set — created
+ *  during development (see docs/superpowers/plans/2026-09-08-anchoring.md,
+ *  Task 5), so `npm run verify -- --receipt ./receipt.json` works exactly as
+ *  README documents, with zero setup. Override with --topic or HCS_TOPIC_ID
+ *  to check a different topic. */
+const DEFAULT_TOPIC_ID = "0.0.10424108";
+
 interface Args {
   readonly receiptPath: string;
   readonly topicId: string;
@@ -32,16 +39,9 @@ function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv): Args {
     );
   }
 
-  const resolvedTopicId = topicId || env.HCS_TOPIC_ID?.trim() || undefined;
-  if (!resolvedTopicId) {
-    throw new Error(
-      "No topic to check against: pass --topic 0.0.<id> or set HCS_TOPIC_ID. See .env.example.",
-    );
-  }
-
   return {
     receiptPath,
-    topicId: resolvedTopicId,
+    topicId: topicId || env.HCS_TOPIC_ID?.trim() || DEFAULT_TOPIC_ID,
     network: network || env.HEDERA_NETWORK?.trim() || undefined,
   };
 }
