@@ -33,7 +33,7 @@
 - **Endpoint & transport:** `POST https://www.askreceipts.com/api/mcp`, MCP Streamable HTTP (JSON-RPC 2.0, SSE-formatted response: `event: message\ndata: {...}\n\n`).
 - **Auth:** `Authorization: Bearer <token>` — confirmed server-side (a bad token gets `401` with `WWW-Authenticate: Bearer error="invalid_token"` and a Clerk JWT-validation error; a real agent key gets `200`).
 - **`tools/list` confirms the raw tool name is `check_budget`**, `inputSchema` requiring `amount` (number, `exclusiveMinimum: 0`) and `currency` (string), with optional `merchant`/`description`.
-- **A real `tools/call` against `check_budget` was made; its response shape confirmed:** the decision payload is not structured JSON-RPC content — it's a JSON-encoded **string** inside `result.content[0].text` (the tool declares no `outputSchema`, so the SDK never populates `structuredContent`), e.g. `{"decision":"allow","considered":0,"enforcing":0,"matched":[],"notEvaluated":[]}`. A separate call returned a richer example: `{"decision":"allow","considered":1,"enforcing":0,"matched":[],"notEvaluated":[{"ruleId":"k17arpgd0c511sg0ewhjvd1b358d1pwb","humanSummary":"Alert me when I spend over $100 on restaurants in a calendar month","why":"category is assigned after the receipt is processed"}]}`.
+- **A real `tools/call` against `check_budget` was made; its response shape confirmed:** the decision payload is not structured JSON-RPC content — it's a JSON-encoded **string** inside `result.content[0].text` (the tool declares no `outputSchema`, so the SDK never populates `structuredContent`), e.g. `{"decision":"allow","considered":0,"enforcing":0,"matched":[],"notEvaluated":[]}`. A separate call returned a richer example (rule id/summary genericized here — the original was a specific real account's actual budget rule): `{"decision":"allow","considered":1,"enforcing":0,"matched":[],"notEvaluated":[{"ruleId":"rule-restaurant-cap","humanSummary":"cap restaurant spending at $100/month","why":"category is assigned after the receipt is processed"}]}`.
 - **SDK usage confirmed correct against the actually-installed package** (`@modelcontextprotocol/sdk@1.30.0`, already a root dependency, currently unused anywhere in this repo's source):
   - `Client` from `@modelcontextprotocol/sdk/client/index.js`; `StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk/client/streamableHttp.js` — the literal `.js` suffix is required by the SDK's own `exports` map (`"./*"` → `"./dist/esm/*"` verbatim; no extensionless entry for this subpath).
   - `StreamableHTTPClientTransportOptions` takes `requestInit?: RequestInit` (for the `Authorization` header) and `fetch?: FetchLike` (a full custom-fetch injection point — the testability seam).
@@ -210,8 +210,8 @@ describe("createLiveCheckBudget", () => {
       enforcing: 1,
       matched: [
         {
-          ruleId: "k17arpgd0c511sg0ewhjvd1b358d1pwb",
-          humanSummary: "Alert me when I spend over $100 on restaurants in a calendar month",
+          ruleId: "rule-restaurant-cap",
+          humanSummary: "cap restaurant spending at $100/month",
         },
       ],
       notEvaluated: [],
@@ -225,8 +225,8 @@ describe("createLiveCheckBudget", () => {
     const result = await checkBudget(REQUEST);
 
     expect(result.verdict).toBe("declined");
-    expect(result.budgetRuleId).toBe("k17arpgd0c511sg0ewhjvd1b358d1pwb");
-    expect(result.reason).toBe("Alert me when I spend over $100 on restaurants in a calendar month");
+    expect(result.budgetRuleId).toBe("rule-restaurant-cap");
+    expect(result.reason).toBe("cap restaurant spending at $100/month");
   });
 
   it('maps decision "refuse" with no matched rule to a decline with a fallback reason', async () => {
