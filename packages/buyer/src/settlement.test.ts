@@ -7,8 +7,8 @@ describe("parseSettlement", () => {
     expect(settlement).toEqual({
       transactionId: "0.0.12345@1699999999.123456789",
       feePayer: "0.0.12345",
-      seconds: 1699999999,
-      nanos: 123456789,
+      validStartSeconds: 1699999999,
+      validStartNanos: 123456789,
     });
   });
 

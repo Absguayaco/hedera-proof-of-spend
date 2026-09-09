@@ -1,6 +1,6 @@
 /**
  * Hedera does not identify a settled transaction with an EVM transaction hash.
- * It uses a transaction ID: the paying account, then the consensus timestamp.
+ * It uses a transaction ID: the paying account, then a valid-start time.
  *
  *     0.0.<feePayer>@<seconds>.<nanos>
  *
@@ -12,9 +12,15 @@ export interface HederaSettlement {
   readonly transactionId: string;
   /** Account that paid the fee, e.g. "0.0.12345". */
   readonly feePayer: string;
-  /** Consensus timestamp, split as Hedera reports it. */
-  readonly seconds: number;
-  readonly nanos: number;
+  /**
+   * The transaction's valid-start time, split as encoded in the transaction
+   * ID — chosen by the paying client, NOT the network. This is NOT the
+   * consensus timestamp; a real consensus timestamp can only come from the
+   * mirror node (its `consensus_timestamp` field), and can differ from this
+   * by several seconds.
+   */
+  readonly validStartSeconds: number;
+  readonly validStartNanos: number;
 }
 
 const TX_ID = /^(\d+\.\d+\.\d+)@(\d+)\.(\d+)$/;
@@ -30,7 +36,12 @@ export function parseSettlement(raw: string): HederaSettlement {
     );
   }
   const [, feePayer, seconds, nanos] = match;
-  return { transactionId: raw, feePayer, seconds: Number(seconds), nanos: Number(nanos) };
+  return {
+    transactionId: raw,
+    feePayer,
+    validStartSeconds: Number(seconds),
+    validStartNanos: Number(nanos),
+  };
 }
 
 /** HashScan URL for a transaction, so a receipt can link to third-party proof. */
