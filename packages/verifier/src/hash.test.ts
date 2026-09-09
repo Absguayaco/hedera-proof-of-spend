@@ -82,6 +82,19 @@ describe("rule 3 — key order", () => {
     const out = canonicalize({ "\u{1D400}": "a", "！": "b" });
     expect(out.indexOf('"！"')).toBeLessThan(out.indexOf('"\u{1D400}"'));
   });
+
+  it("orders a lone surrogate by its raw code point value, not a UTF-8 substitution", () => {
+    // U+D800 is a lone (unpaired) high surrogate: a valid Unicode code
+    // point, but not a valid Unicode scalar value, so real UTF-8 cannot
+    // represent it. JSON.stringify escapes it as the literal text \ud800
+    // rather than embedding the raw code unit. U+E000 is an ordinary, valid
+    // Private Use Area code point and is emitted literally, per rule 6.
+    //
+    // By raw code point value, D800 (55296) sorts before E000 (57344).
+    const receipt = { "\ud800": "1", "\ue000": "2" };
+    const out = canonicalize(receipt);
+    expect(out.indexOf("\\ud800")).toBeLessThan(out.indexOf("\ue000"));
+  });
 });
 
 describe("rules 4 to 6", () => {

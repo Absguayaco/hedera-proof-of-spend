@@ -52,6 +52,12 @@ Out of scope (left for the e2e script later):
   one worth publishing since it round-trips from `settlement.transactionId`
   with no extra parsing).
 
+  > **Superseded:** this URL shape does not actually work — live verification
+  > later found `/testnet/tx/<id>` renders every field as "None". See
+  > `packages/buyer/src/settlement.ts`'s `hashscanUrl()` for the corrected
+  > shape (`/testnet/transaction/<feePayer>-<validStartSeconds>-<validStartNanos>`,
+  > dashes not dots).
+
 ### `packages/buyer/src/index.ts`
 
 Implement `buyResource(request: BuyRequest): Promise<BuyResult>` as an

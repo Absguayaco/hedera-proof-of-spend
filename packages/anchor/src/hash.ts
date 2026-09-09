@@ -95,7 +95,14 @@ function canonicalValue(value: unknown, path: string): Canonical {
     }
 
     const source = value as Record<string, unknown>;
-    const result: { [key: string]: Canonical } = {};
+    // Object.create(null), not {} -- a plain {} has Object.prototype's
+    // __proto__ accessor, so result["__proto__"] = ... silently sets the
+    // prototype instead of creating an own property, and a receipt that
+    // genuinely has a "__proto__" key (real, reachable via JSON.parse) loses
+    // it without error. A null-prototype object has no such accessor, so
+    // bracket-notation assignment to any string key always creates a real
+    // own property.
+    const result: { [key: string]: Canonical } = Object.create(null);
 
     // Rule 3, plus rule 5: a key whose value is undefined is omitted entirely.
     // JSON.stringify emits keys in insertion order, so inserting them sorted

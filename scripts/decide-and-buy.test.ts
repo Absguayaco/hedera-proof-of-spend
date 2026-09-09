@@ -65,7 +65,12 @@ const FAILED_ANCHOR: AnchorResult = { ok: false, hash: "a".repeat(64), error: "m
 const PURCHASE: BuyResult = {
   body: { item: { slug: "espresso" } },
   amountTinybar: 15_000_000n,
-  settlement: { transactionId: "0.0.99999@1700000000.123456789", feePayer: "0.0.11111", seconds: 1700000000, nanos: 123456789 },
+  settlement: {
+    transactionId: "0.0.99999@1700000000.123456789",
+    feePayer: "0.0.11111",
+    validStartSeconds: 1700000000,
+    validStartNanos: 123456789,
+  },
 };
 
 describe("decideAndBuy", () => {
