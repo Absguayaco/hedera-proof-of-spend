@@ -31,21 +31,28 @@
  * Step 6 is the one that matters: it is the only step whose evidence does
  * not come from us.
  */
-export {}; // module scope — without this, `main` would collide with the verifier CLI
+// module scope — belt-and-braces: the file's several `export` declarations
+// below already make this unambiguously a module, but the plan mandates
+// keeping this statement, so it stays even though it's now redundant.
+export {};
 
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
-import { verify } from "@proof-of-spend/verifier";
-import { createLiveCheckBudget } from "./check-budget-live.ts";
-import { decideAndBuy } from "./decide-and-buy.ts";
-import type { DecideAndBuyResult } from "./decide-and-buy.ts";
-
 import type { BuyResult } from "@proof-of-spend/buyer";
-import type { BudgetCheckRequest } from "./decide-and-buy.ts";
+import { verify } from "@proof-of-spend/verifier";
+import type { VerifyResult } from "@proof-of-spend/verifier";
+import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
+import { decideAndBuy } from "./decide-and-buy.ts";
+import type { BudgetCheckRequest, DecideAndBuyResult } from "./decide-and-buy.ts";
 
 const TINYBAR_PER_HBAR = 100_000_000n;
 const MERCHANT = "hedera-proof-of-spend store";
+const DEFAULT_STORE_URL = "https://hedera-proof-of-spend-store.vercel.app";
+const DEFAULT_ASKRECEIPTS_URL = "https://www.askreceipts.com/api/mcp";
+const AGENT_ID = "hedera-proof-of-spend-e2e-agent";
+const APPROVAL_SLUG = "espresso";
+const DECLINE_SLUG = "cold-brew";
 
 /**
  * Converts a tinybar price to the nominal USD amount check_budget's
@@ -169,16 +176,10 @@ export function buildReceipt(slug: string, purchase: BuyResult): Record<string, 
   };
 }
 
-const DEFAULT_STORE_URL = "https://hedera-proof-of-spend-store.vercel.app";
-const DEFAULT_ASKRECEIPTS_URL = "https://www.askreceipts.com/api/mcp";
-const AGENT_ID = "hedera-proof-of-spend-e2e-agent";
-const APPROVAL_SLUG = "espresso";
-const DECLINE_SLUG = "cold-brew";
-
-function requireEnv(name: string): string {
+function requireEnv(name: string, message?: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
-    throw new Error(`${name} is not set. See .env.example.`);
+    throw new Error(message ?? `${name} is not set. See .env.example.`);
   }
   return value;
 }
@@ -211,10 +212,18 @@ function section(title: string): void {
   console.log(`=== ${title} ===`);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main(): Promise<void> {
   const operatorId = requireEnv("HEDERA_OPERATOR_ID");
   const operatorKey = requireEnv("HEDERA_OPERATOR_KEY");
-  const agentKey = requireEnv("ASKRECEIPTS_AGENT_KEY");
+  const agentKey = requireEnv(
+    "ASKRECEIPTS_AGENT_KEY",
+    "ASKRECEIPTS_AGENT_KEY is not set. The public demo token is not yet published; supply an " +
+      "askReceipts agent key (ar_agent_live_... or ar_agent_demo_...) until it is.",
+  );
   assertTestnet(process.env.HEDERA_NETWORK);
 
   const store = storeUrl();
@@ -269,15 +278,14 @@ async function main(): Promise<void> {
   }
 
   const topicId = envTopicId ?? approvalResult.anchor.topicId;
-  if (!topicId) {
-    console.error(
-      "No HCS topic id is available (HCS_TOPIC_ID unset and the decision anchor did not return one) -- cannot anchor or verify a receipt.",
-    );
-    process.exitCode = 1;
-    return;
+  if (topicId) {
+    console.log(`HCS topic in use for this run: ${topicId}`);
   }
-  console.log(`HCS topic in use for this run: ${topicId}`);
 
+  // Checked before the generic topic-availability guard below: when the
+  // outcome is "anchor_failed" specifically because topic creation itself
+  // failed, this branch's message explains why, which is more useful than
+  // the generic "no topic id" message that guard would otherwise show first.
   if (approvalResult.outcome !== "purchased") {
     console.error("");
     console.error(
@@ -286,11 +294,21 @@ async function main(): Promise<void> {
     console.error(
       approvalResult.outcome === "declined"
         ? "The pre-provisioned budget rule appears to be refusing even the cheap item -- " +
-            "check its threshold. It must sit strictly between $0.25 and $0.35 (see this " +
-            "plan's Prerequisite section for the exact proposed wording)."
+            "either the rule's threshold is wrong (it must sit strictly between $0.25 and " +
+            "$0.35) or askReceipts could not evaluate it -- see the `reason:` line above. See " +
+            "docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's Prerequisite section for " +
+            "the exact proposed wording."
         : "The decision could not be anchored to HCS, so nothing was bought -- see the anchor error above.",
     );
     console.error("Steps 3-6 need a genuinely purchased item and cannot run. Stopping here.");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!topicId) {
+    console.error(
+      "No HCS topic id is available (HCS_TOPIC_ID unset and the decision anchor did not return one) -- cannot anchor or verify a receipt.",
+    );
     process.exitCode = 1;
     return;
   }
@@ -337,8 +355,9 @@ async function main(): Promise<void> {
       console.error(
         declineResult.outcome === "purchased"
           ? "The pre-provisioned budget rule did not trigger -- has it been created yet? " +
-              'See this plan\'s Prerequisite section for the exact wording expected ' +
-              '("Refuse any agent purchase on the hedera-proof-of-spend store over $0.30.", enforcement "refuse").'
+              "See docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's Prerequisite " +
+              'section for the exact wording expected ("Refuse any agent purchase on the ' +
+              'hedera-proof-of-spend store over $0.30.", enforcement "refuse").'
           : "The decision could not be anchored to HCS -- see the anchor error above.",
       );
       console.error("This does not fail the run: continuing with the rest of the walkthrough using the espresso purchase already made above.");
@@ -361,20 +380,58 @@ async function main(): Promise<void> {
   }
 
   // --- Step 5: verify independently ---
+  // HCS consensus (step 4) and the public mirror node's REST API are
+  // separate systems: the mirror node ingests messages *after* consensus,
+  // with real-world lag (this repo's own prior work measured an ~8.68s gap
+  // on a real transaction). A single, immediate verify() call would
+  // intermittently report "missing" on a run that actually succeeded, so
+  // this polls for up to ~30s before treating "missing" as genuine.
   section("Step 5: the verifier re-hashes the receipt independently and checks the topic");
-  const verifyResult = await verify(receipt, { topicId });
-  console.log(`outcome: ${verifyResult.outcome}`);
-  console.log(`computed hash: ${verifyResult.computedHash}`);
-  if (verifyResult.consensusTimestamp) {
-    console.log(`consensus timestamp: ${verifyResult.consensusTimestamp}`);
+  const MIRROR_NODE_MAX_ATTEMPTS = 6;
+  const MIRROR_NODE_RETRY_DELAY_MS = 5_000;
+  let verifyResult: VerifyResult | undefined;
+  let verifyCheckError: unknown;
+  try {
+    verifyResult = await verify(receipt, { topicId });
+    let attempt = 1;
+    while (verifyResult.outcome === "missing" && attempt < MIRROR_NODE_MAX_ATTEMPTS) {
+      attempt += 1;
+      console.log(
+        `not yet visible on the mirror node, retrying (${attempt}/${MIRROR_NODE_MAX_ATTEMPTS})...`,
+      );
+      await sleep(MIRROR_NODE_RETRY_DELAY_MS);
+      verifyResult = await verify(receipt, { topicId });
+    }
+    console.log(`outcome: ${verifyResult.outcome}`);
+    console.log(`computed hash: ${verifyResult.computedHash}`);
+    if (verifyResult.consensusTimestamp) {
+      console.log(`consensus timestamp: ${verifyResult.consensusTimestamp}`);
+    }
+  } catch (error) {
+    // The purchase (step 2) and HCS anchor (step 4) already genuinely
+    // succeeded by this point -- a mirror-node failure here is "could not
+    // check", not "checked and did not match", and must not read as either
+    // a verification mismatch or take down steps 6-7 and the final summary.
+    verifyResult = undefined;
+    verifyCheckError = error;
+    console.error(`Could not verify against the mirror node: ${describeError(error)}`);
+    console.error(
+      'This is "could not check" -- not "checked and did not match". The purchase and HCS ' +
+        "anchor above already succeeded independently of this step.",
+    );
   }
 
   // --- Step 6: HashScan ---
   section("Step 6: HashScan shows the same message, on a network neither of us controls");
-  if (verifyResult.hashscanUrl) {
+  if (verifyResult?.hashscanUrl) {
     console.log(`hashscan (topic messages): ${verifyResult.hashscanUrl}`);
+  } else if (verifyCheckError) {
+    console.log(
+      "hashscan (topic messages, not confirmed by this script -- see the mirror-node error " +
+        `above): https://hashscan.io/testnet/topic/${topicId}/messages`,
+    );
   } else {
-    console.log(`No HashScan topic link available -- outcome was "${verifyResult.outcome}", not "match".`);
+    console.log(`No HashScan topic link available -- outcome was "${verifyResult?.outcome}", not "match".`);
   }
   console.log(`(step 2's settlement transaction is also on HashScan: ${hashscanUrl(purchase.settlement)})`);
 
@@ -387,13 +444,19 @@ async function main(): Promise<void> {
       "would misrepresent what was actually checked, so this step is cut rather than faked.",
   );
 
-  const coreSuccess = verifyResult.outcome === "match";
+  const coreSuccess = verifyResult?.outcome === "match";
   console.log("");
-  console.log(
-    coreSuccess
-      ? "RESULT: core proof (purchase, anchor, independent verification) succeeded."
-      : `RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult.outcome}").`,
-  );
+  if (coreSuccess) {
+    console.log("RESULT: core proof (purchase, anchor, independent verification) succeeded.");
+  } else if (verifyCheckError) {
+    console.log(
+      'RESULT: core proof\'s purchase and anchor succeeded, but independent verification ' +
+        'could NOT be checked (mirror node error) -- this is "could not check", not ' +
+        '"checked and did not match". See the error above.',
+    );
+  } else {
+    console.log(`RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult?.outcome}").`);
+  }
   if (!coreSuccess) {
     process.exitCode = 1;
   }
