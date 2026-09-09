@@ -69,7 +69,16 @@ other workspace packages, so the deployed function referenced files that were
 never uploaded. `npm run build` now bundles `packages/store/src/vercel.ts` into
 `api/index.js` with esbuild, and `vercel.json` runs it. Exactly one artifact,
 for exactly one deploy target: local development, tests and CI still run the
-sources with no build step. `api/index.js` is generated and gitignored.
+sources with no build step.
+
+`api/index.js` is committed, not gitignored. The build-on-Vercel approach
+failed in practice — remote-debugging a Vercel build log is a five-minute
+feedback loop — so the committed bundle removes that failure class instead:
+no build command to misfire, no esbuild needed on the build machine, no
+dependence on how Vercel orders build output against function detection. The
+deploy is a plain `.js` function with traceable imports. Because a committed
+artifact can drift from its source silently, CI runs the same build and fails
+if the result differs from what is checked in.
 
 ## Decision: the two hash implementations are duplicated on purpose
 
@@ -176,8 +185,22 @@ which this repo requires, so the allow-list is a real control here. On an older
 npm it silently does nothing, which is exactly why the preinstall hook refuses
 to run below 11.10.0: a control that quietly does not apply is worse than none.
 
-`strict-allow-scripts` is a separate key and has not been verified on 11.19.0;
-it is not used here rather than assumed to work.
+**Correction again.** `strict-allow-scripts` IS enabled (`.npmrc`) and has
+been measured on npm 11.19.0, by PR #2 ("Enforce the allow-script list, and
+complete it"). Measured against a dependency with an unlisted `postinstall`:
+with the allow-list alone and no `strict-allow-scripts`, npm prints
+`install-scripts ... not yet covered by allowScripts` — and runs the script
+anyway. With `strict-allow-scripts=true`, the same install stops with
+`ESTRICTALLOWSCRIPTS` and the script does not run. Same list both times — the
+setting is what turns the list from a note into a control.
+
+Turning it on found the list itself was incomplete: `fsevents@2.3.3` declares
+an install script and was missing. It is `os: ["darwin"]` and optional, so it
+is absent on the `ubuntu-latest` CI runner and present on any macOS checkout —
+enforcement without it would have passed CI and broken every Mac. `.npmrc` now
+lists all four packages that declare install scripts for this lockfile on
+both platforms: `esbuild@0.28.1`, `fsevents@2.3.3`, `protobufjs@7.6.6`,
+`protobufjs@8.0.1`.
 
 **payment-rails-buyer is still worth checking** — not because its allow-list is
 fake, but because whether it works there depends entirely on which npm is
