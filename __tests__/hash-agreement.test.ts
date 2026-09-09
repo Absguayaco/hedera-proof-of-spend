@@ -39,6 +39,10 @@ const corpus: Array<[name: string, receipt: unknown]> = [
   ["empty string key", { "": "1", a: "2" }],
   ["keys differing only by case", { A: "1", a: "2" }],
   ["key that is a prefix of another", { ab: "1", a: "2", abc: "3" }],
+  [
+    "a __proto__ key from JSON.parse, not an object literal",
+    JSON.parse('{"a":"1","__proto__":"x"}'),
+  ],
   ["deep nesting", { a: { b: { c: { d: { e: "deep" } } } } }],
   [
     "a realistic receipt",

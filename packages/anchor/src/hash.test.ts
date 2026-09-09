@@ -94,6 +94,25 @@ describe("rule 3 — keys sorted by code point", () => {
   });
 });
 
+describe("a __proto__ key from JSON.parse is not silently lost", () => {
+  it("canonicalize includes __proto__ as a real key, not the object's prototype", () => {
+    // A hand-written `{ __proto__: "x" }` object literal never has
+    // "__proto__" as an own key at all -- object-literal syntax treats it as
+    // setting the prototype. JSON.parse is different: it genuinely creates
+    // an own, enumerable "__proto__" property. That's the only realistic way
+    // this key ever reaches canonicalize (a receipt arrives via JSON.parse),
+    // and it's the only construction that reproduces the bug.
+    const receipt = JSON.parse('{"a":"1","__proto__":"x"}') as unknown;
+    expect(Object.hasOwn(receipt as object, "__proto__")).toBe(true);
+    expect(canonicalize(receipt)).toBe('{"__proto__":"x","a":"1"}');
+  });
+
+  it("hashes differently from the same receipt without __proto__", () => {
+    const withProto = JSON.parse('{"a":"1","__proto__":"x"}') as unknown;
+    expect(hashReceipt(withProto)).not.toBe(hashReceipt({ a: "1" }));
+  });
+});
+
 describe("rule 4 — array order is preserved", () => {
   it("keeps order", () => {
     expect(canonicalize({ lines: ["b", "a"] })).toBe('{"lines":["b","a"]}');
