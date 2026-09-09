@@ -37,15 +37,12 @@ export interface BudgetCheckResponse {
 }
 
 /**
- * PLACEHOLDER CONTRACT. Stands in for askReceipts' real check_budget MCP
- * tool. Nothing in this repo or its history defines that tool's actual
- * request/response schema, and — while a real, tested client for it now
- * exists at scripts/check-budget-live.ts (Bearer-token auth, not OAuth as
- * this comment used to claim), verified live against the real server —
- * nothing in *this* file uses it yet. This is this module's own minimal
- * guess at a generic shape — injectable so the gating logic is fully
- * testable now, with the real wiring deferred to a later scripts/e2e.ts
- * slice. Do not treat this as ground truth.
+ * PLACEHOLDER CONTRACT. This module's own minimal guess at a generic shape,
+ * predating live verification of the real tool. The real schema is now known
+ * and implemented at scripts/check-budget-live.ts (Bearer-token auth, not
+ * OAuth as this comment used to claim) — but nothing in *this* file uses it
+ * yet, so this shape stays as-is until a human wires that up. Do not treat
+ * this shape as ground truth; check-budget-live.ts is.
  */
 export type CheckBudget = (request: BudgetCheckRequest) => Promise<BudgetCheckResponse>;
 

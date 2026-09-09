@@ -108,6 +108,13 @@ function parseCheckBudgetResult(text: string): RealCheckBudgetResult {
     typeof record.considered !== "number" ||
     typeof record.enforcing !== "number" ||
     !Array.isArray(record.matched) ||
+    !record.matched.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as Record<string, unknown>).ruleId === "string" &&
+        typeof (entry as Record<string, unknown>).humanSummary === "string",
+    ) ||
     !Array.isArray(record.notEvaluated)
   ) {
     throw new Error(
@@ -223,7 +230,8 @@ export function createLiveCheckBudget(
         throw new Error(`check_budget reported a tool error: ${JSON.stringify(result.content)}`);
       }
 
-      const [first] = result.content;
+      const content = Array.isArray(result.content) ? result.content : [];
+      const [first] = content;
       if (!first || first.type !== "text") {
         throw new Error(
           `check_budget returned no text content block: ${JSON.stringify(result.content)}`,
@@ -232,7 +240,9 @@ export function createLiveCheckBudget(
 
       return mapResult(parseCheckBudgetResult(first.text));
     } finally {
-      await client.close();
+      // A close() failure here must never mask a more useful error thrown
+      // above (e.g. a network failure) by replacing it.
+      await client.close().catch(() => {});
     }
   };
 }

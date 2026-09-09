@@ -140,8 +140,8 @@ describe("createLiveCheckBudget", () => {
       enforcing: 1,
       matched: [
         {
-          ruleId: "k17arpgd0c511sg0ewhjvd1b358d1pwb",
-          humanSummary: "Alert me when I spend over $100 on restaurants in a calendar month",
+          ruleId: "rule-restaurant-cap",
+          humanSummary: "cap restaurant spending at $100/month",
         },
       ],
       notEvaluated: [],
@@ -155,8 +155,8 @@ describe("createLiveCheckBudget", () => {
     const result = await checkBudget(REQUEST);
 
     expect(result.verdict).toBe("declined");
-    expect(result.budgetRuleId).toBe("k17arpgd0c511sg0ewhjvd1b358d1pwb");
-    expect(result.reason).toBe("Alert me when I spend over $100 on restaurants in a calendar month");
+    expect(result.budgetRuleId).toBe("rule-restaurant-cap");
+    expect(result.reason).toBe("cap restaurant spending at $100/month");
   });
 
   it('maps decision "refuse" with no matched rule to a decline with a fallback reason', async () => {
@@ -242,8 +242,9 @@ describe("createLiveCheckBudget", () => {
     expect(result.reason).toContain('unrecognized decision "unknown_future_decision"');
   });
 
-  it("sends the configured agent key as a Bearer Authorization header", async () => {
+  it("sends the configured agent key as a Bearer Authorization header, to the configured URL", async () => {
     let sawAuthHeader: string | null = null;
+    let sawUrl: string | null = null;
     const { fetchImpl } = fakeAskReceipts({
       decision: "allow",
       considered: 0,
@@ -252,6 +253,7 @@ describe("createLiveCheckBudget", () => {
       notEvaluated: [],
     });
     const spyingFetch = (async (input: unknown, init?: RequestInit) => {
+      sawUrl = String(input);
       if ((init?.method ?? "GET") !== "GET") {
         sawAuthHeader = new Headers(init?.headers).get("authorization");
       }
@@ -266,6 +268,7 @@ describe("createLiveCheckBudget", () => {
     await checkBudget(REQUEST);
 
     expect(sawAuthHeader).toBe(`Bearer ${AGENT_KEY}`);
+    expect(sawUrl).toBe(MCP_URL);
   });
 
   it("throws, without calling the network, when describePurchase produces a non-positive amount", async () => {
@@ -344,5 +347,57 @@ describe("createLiveCheckBudget", () => {
     );
 
     await expect(checkBudget(REQUEST)).rejects.toThrow(/tool error/);
+  });
+
+  it("throws when content is an empty array (no text content block)", async () => {
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      const body = JSON.parse(String(init?.body)) as { method: string; id: number };
+      if (body.method === "initialize") return sseResponse(initializeResult(body.id));
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "tools/call") {
+        return sseResponse({
+          result: { content: [] },
+          jsonrpc: "2.0",
+          id: body.id,
+        });
+      }
+      throw new Error(`unexpected method ${body.method}`);
+    }) as typeof fetch;
+    const checkBudget = createLiveCheckBudget(
+      { url: MCP_URL, agentKey: AGENT_KEY },
+      describeEspresso,
+      fetchImpl,
+    );
+
+    await expect(checkBudget(REQUEST)).rejects.toThrow(/no text content block/);
+  });
+
+  it("throws when content[0].text is valid JSON but missing required fields", async () => {
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      const body = JSON.parse(String(init?.body)) as { method: string; id: number };
+      if (body.method === "initialize") return sseResponse(initializeResult(body.id));
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "tools/call") {
+        return sseResponse({
+          result: { content: [{ type: "text", text: '{"decision":"allow"}' }] },
+          jsonrpc: "2.0",
+          id: body.id,
+        });
+      }
+      throw new Error(`unexpected method ${body.method}`);
+    }) as typeof fetch;
+    const checkBudget = createLiveCheckBudget(
+      { url: MCP_URL, agentKey: AGENT_KEY },
+      describeEspresso,
+      fetchImpl,
+    );
+
+    await expect(checkBudget(REQUEST)).rejects.toThrow(
+      /missing decision\/considered\/enforcing\/matched\/notEvaluated/,
+    );
   });
 });

@@ -672,7 +672,7 @@ Run: `npm run typecheck`
 Expected: no output, exit code 0 (matches the clean baseline this plan started from).
 
 Run: `npm test`
-Expected: PASS — 18 test files, 249 tests passed (the pre-existing 17 files / 237 tests, plus this task's 1 file / 12 tests).
+Expected: PASS — 18 test files, 241 tests passed (the pre-existing 17 files / 229 tests, plus this task's 1 file / 12 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -748,7 +748,7 @@ Run: `npm run typecheck`
 Expected: no output, exit code 0 (a comment-only change cannot affect types, but this confirms nothing else was touched).
 
 Run: `npm test`
-Expected: PASS — 18 test files, 249 tests passed (identical count to Task 1's Step 5 — this task changes no behavior).
+Expected: PASS — 18 test files, 241 tests passed (identical count to Task 1's Step 5 — this task changes no behavior).
 
 - [ ] **Step 5: Commit**
 
@@ -770,7 +770,7 @@ git commit -m "docs: CheckBudget's OAuth claim was wrong -- the live endpoint us
 
 ## Verification (whole plan)
 
-1. `npm test` — full suite passes after every task (baseline 237 + this plan's 12 new tests = 249).
+1. `npm test` — full suite passes after every task (baseline 229 + this plan's 12 new tests = 241).
 2. `npm run typecheck` — clean after every task.
 3. Both tasks' technical claims were independently re-verified against the actually-installed `@modelcontextprotocol/sdk` source in `node_modules` before this plan was finalized: the transport's 405-on-GET tolerance, `Client`'s `connect`/`callTool`/`close` signatures, and `scripts/decide-and-buy.ts:39-47`'s exact current text all match what this plan assumes.
 
