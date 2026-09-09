@@ -30,11 +30,12 @@
  * about not sharing CODE and not reasoning from the same starting point, not
  * about every sub-technique being maximally divergent. So this file now
  * compares keys the same way the anchor does (by code point, via
- * Array.from + codePointAt), written fresh from first principles rather
- * than copied from the other file. Everything else in this file -- emitting
- * text directly instead of building a tree, filtering-then-sorting instead
- * of a loop-with-continue, delegating RFC 8259 escaping to JSON.stringify --
- * remains genuinely independent.
+ * Array.from + codePointAt) -- there are few other ways to express this rule
+ * correctly in JavaScript, so convergence on this technique is forced by the
+ * rule itself, not a sign of shared authorship. Everything else in this file
+ * -- emitting text directly instead of building a tree, filtering-then-sorting
+ * instead of a loop-with-continue, delegating RFC 8259 escaping to
+ * JSON.stringify -- remains genuinely independent.
  *
  * One component is honestly shared: both call JSON.stringify on individual
  * *strings* for RFC 8259 escaping (rule 6). Hand-rolling escaping twice would

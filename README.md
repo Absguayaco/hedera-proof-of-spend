@@ -197,6 +197,12 @@ change later without invalidating anchors made under the old one.
    escaping, and non-ASCII characters are emitted literally rather than as
    `\u` escapes.
 
+   One exception: an unpaired (lone) surrogate is emitted as a `\uXXXX`
+   escape, not literally, because it has no valid UTF-8 encoding and rule 7
+   would otherwise substitute U+FFFD for it. This is what a conforming JSON
+   serializer already does — both implementations rely on `JSON.stringify`
+   for this, per rule 6's escaping and rule 3's note on the surrogate range.
+
 7. **Encode the result as UTF-8, hash it with SHA-256, and render the digest as
    lowercase hexadecimal.** That string is the receipt hash.
 
