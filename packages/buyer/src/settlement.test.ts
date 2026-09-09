@@ -26,10 +26,24 @@ describe("parseSettlement", () => {
 });
 
 describe("hashscanUrl", () => {
-  it("builds the testnet transaction link from the full transaction id", () => {
+  it("builds the testnet transaction link with dashes, not the transaction id's dots", () => {
+    // Verified live: https://hashscan.io/testnet/tx/<id> (dots, word "tx")
+    // renders every field as "None". https://hashscan.io/testnet/transaction/
+    // <dashed> (dashes, word "transaction") renders the real transaction.
+    // Confirmed against a real settled testnet transaction.
+    const settlement = parseSettlement("0.0.7162784@1788825896.303987758");
+    expect(hashscanUrl(settlement)).toBe(
+      "https://hashscan.io/testnet/transaction/0.0.7162784-1788825896-303987758",
+    );
+  });
+
+  it("does not dash-replace the dots inside the fee payer's account id", () => {
+    // A naive transactionId.replaceAll(".", "-") would also mangle
+    // "0.0.12345" into "0-0-12345". Building the URL from the already-parsed
+    // fields avoids that.
     const settlement = parseSettlement("0.0.12345@1699999999.123456789");
     expect(hashscanUrl(settlement)).toBe(
-      "https://hashscan.io/testnet/tx/0.0.12345@1699999999.123456789",
+      "https://hashscan.io/testnet/transaction/0.0.12345-1699999999-123456789",
     );
   });
 });

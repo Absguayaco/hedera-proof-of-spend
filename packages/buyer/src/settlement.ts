@@ -44,7 +44,16 @@ export function parseSettlement(raw: string): HederaSettlement {
   };
 }
 
-/** HashScan URL for a transaction, so a receipt can link to third-party proof. */
+/**
+ * HashScan URL for a transaction, so a receipt can link to third-party proof.
+ *
+ * Verified live: https://hashscan.io/testnet/tx/<transactionId> (dots, word
+ * "tx") renders every field as "None" -- broken. HashScan actually expects
+ * https://hashscan.io/testnet/transaction/<feePayer>-<seconds>-<nanos>
+ * (dashes, word "transaction"). Built from the already-parsed fields, not by
+ * string-replacing dots in transactionId, which would also mangle the dots
+ * inside the shard.realm.num fee-payer account id.
+ */
 export function hashscanUrl(settlement: HederaSettlement): string {
-  return `https://hashscan.io/testnet/tx/${settlement.transactionId}`;
+  return `https://hashscan.io/testnet/transaction/${settlement.feePayer}-${settlement.validStartSeconds}-${settlement.validStartNanos}`;
 }
