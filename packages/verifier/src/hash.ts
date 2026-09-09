@@ -10,12 +10,31 @@
  * If these two ever disagree, that is a finding, not a bug to paper over by
  * making one import the other.
  *
- * The two take different routes on purpose. The anchor rebuilds a value tree
- * with ordered keys and hands it to JSON.stringify; this one walks the value
- * and emits the text itself, and derives key order from UTF-8 bytes rather
- * than from an array of code points. Agreement between two spellings of the
- * same rule is worth something; agreement between two copies of one function
- * is worth nothing.
+ * The two take different routes on purpose, for everything except one narrow
+ * point. The anchor rebuilds a value tree with ordered keys and hands it to
+ * JSON.stringify; this one walks the value and emits the text itself, and
+ * nothing here relies on JSON.stringify preserving insertion order. That
+ * remains genuinely independent.
+ *
+ * Key order (rule 3) is the one exception, and it is deliberate, not an
+ * oversight. This file originally derived key order from UTF-8 byte order
+ * instead of from an array of code points, on the premise that "UTF-8 byte
+ * order and Unicode code point order are the same order" -- true for
+ * well-formed text, false for a lone (unpaired) UTF-16 surrogate, which
+ * TextEncoder cannot represent in valid UTF-8 and silently substitutes
+ * U+FFFD for, corrupting the order. Preserving byte-order-as-a-technique
+ * through that edge case would mean hand-rolling a non-standard encoder for
+ * a case vanishingly unlikely in a real receipt, purely to keep this one
+ * sub-technique divergent from the anchor's. The independence claim this
+ * project actually makes -- stated in the README and in docs/design.md -- is
+ * about not sharing CODE and not reasoning from the same starting point, not
+ * about every sub-technique being maximally divergent. So this file now
+ * compares keys the same way the anchor does (by code point, via
+ * Array.from + codePointAt), written fresh from first principles rather
+ * than copied from the other file. Everything else in this file -- emitting
+ * text directly instead of building a tree, filtering-then-sorting instead
+ * of a loop-with-continue, delegating RFC 8259 escaping to JSON.stringify --
+ * remains genuinely independent.
  *
  * One component is honestly shared: both call JSON.stringify on individual
  * *strings* for RFC 8259 escaping (rule 6). Hand-rolling escaping twice would
@@ -29,22 +48,27 @@ import { createHash } from "node:crypto";
 
 export const HASH_VERSION = 1;
 
-const utf8 = new TextEncoder();
-
 /**
- * Order two keys per rule 3, by comparing their UTF-8 encodings.
+ * Sort by Unicode code point, per rule 3.
  *
- * UTF-8 byte order and Unicode code point order are the same order, so this
- * satisfies the rule without ever materialising code points — a different
- * derivation from the anchor's, which is the point of writing it twice.
+ * A code point's raw numeric value, not its UTF-8 encoding, is what "sorted
+ * by Unicode code point" means -- including a value in the surrogate range
+ * D800-DFFF for an unpaired surrogate, which has no valid UTF-8 encoding at
+ * all. Array.from() splits a string into code points (rather than UTF-16
+ * code units, which would sort astral-plane characters wrong), so reading
+ * each one off with codePointAt() and comparing the numbers directly is the
+ * one representation this rule can be applied to without going through an
+ * intermediate encoding that might not be able to represent every value.
  */
-function byUtf8Bytes(left: string, right: string): number {
-  const a = utf8.encode(left);
-  const b = utf8.encode(right);
+function byCodePoint(left: string, right: string): number {
+  const a = Array.from(left);
+  const b = Array.from(right);
   const shared = Math.min(a.length, b.length);
 
   for (let index = 0; index < shared; index += 1) {
-    if (a[index] !== b[index]) return a[index]! - b[index]!;
+    const x = a[index]!.codePointAt(0)!;
+    const y = b[index]!.codePointAt(0)!;
+    if (x !== y) return x - y;
   }
   return a.length - b.length;
 }
@@ -120,7 +144,7 @@ function emit(value: unknown, path: string, out: string[]): void {
   // the same as a key set to null.
   const keys = Object.keys(value)
     .filter((key) => value[key] !== undefined)
-    .sort(byUtf8Bytes);
+    .sort(byCodePoint);
 
   out.push("{");
   keys.forEach((key, index) => {

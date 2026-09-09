@@ -43,6 +43,10 @@ const corpus: Array<[name: string, receipt: unknown]> = [
     "a __proto__ key from JSON.parse, not an object literal",
     JSON.parse('{"a":"1","__proto__":"x"}'),
   ],
+  [
+    "a lone surrogate key sorts by raw code point, not UTF-8 substitution",
+    JSON.parse('{"\\ud800":"1","\ue000":"2"}'),
+  ],
   ["deep nesting", { a: { b: { c: { d: { e: "deep" } } } } }],
   [
     "a realistic receipt",

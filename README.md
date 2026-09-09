@@ -177,6 +177,15 @@ change later without invalidating anchors made under the old one.
    of nesting. Note this is code point order, not UTF-16 code unit order; they
    differ above the basic multilingual plane.
 
+   "Unicode code point" here means the raw code point value — including a
+   value in the surrogate range D800–DFFF for an unpaired (lone) surrogate,
+   which is a valid Unicode code point even though it is not a valid Unicode
+   scalar value and has no valid UTF-8 encoding. A comparator that sorts by
+   UTF-8 bytes instead of by the code point's numeric value gets this case
+   wrong, because UTF-8 cannot represent a lone surrogate and must substitute
+   a different character (U+FFFD) for it, which can sort on the wrong side of
+   a neighboring key. Sort by the number, not by an encoding of it.
+
 4. **Array order is preserved.** Order in an array is data, not presentation.
 
 5. **Keys with no value are omitted.** A key explicitly set to `null` is kept,
