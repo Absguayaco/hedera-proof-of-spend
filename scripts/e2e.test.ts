@@ -128,6 +128,12 @@ describe("bindReceiptToDecision", () => {
     agent: "hedera-proof-of-spend-e2e-agent",
     resource: "https://store.example/buy/espresso",
     verdict: "approved",
+    // amount/currency/payTo (B1) and budgetRuleId's required-string shape
+    // were both added to Decision after this test was first written --
+    // kept in step with scripts/decide-and-buy.ts's own Decision interface.
+    amount: "15000000",
+    currency: "HBAR",
+    payTo: "0.0.54321",
     budgetRuleId: "rule-1",
     nonce: "11111111-1111-1111-1111-111111111111",
     decidedAt: "2026-09-10T00:00:00.000Z",
@@ -175,18 +181,26 @@ describe("bindReceiptToDecision", () => {
     ).toThrow(new RegExp(DECISION.nonce));
   });
 
-  it("keeps authorizingDecision hashable identically to the original Decision, even when optional fields are present as undefined-valued keys (decideAndBuy()'s real shape when askReceipts returns no rule) and get dropped by a JSON round-trip", () => {
-    const decisionWithUndefinedOptionals: Decision = {
+  it("keeps authorizingDecision hashable identically to the original Decision, even when its optional `reason` field is present as an undefined-valued key (decideAndBuy()'s real shape when askReceipts returns no reason text) and gets dropped by a JSON round-trip", () => {
+    // budgetRuleId is no longer optional on Decision (it defaults to the
+    // "none" sentinel in decideAndBuy() precisely so it can never be
+    // undefined -- see Decision's own doc comment in decide-and-buy.ts) --
+    // `reason` is the only field left that can genuinely be an
+    // undefined-valued key here.
+    const decisionWithUndefinedReason: Decision = {
       agent: "hedera-proof-of-spend-e2e-agent",
       resource: "https://store.example/buy/espresso",
       verdict: "approved",
-      budgetRuleId: undefined,
+      amount: "15000000",
+      currency: "HBAR",
+      payTo: "0.0.54321",
+      budgetRuleId: "none",
       reason: undefined,
       nonce: "22222222-2222-2222-2222-222222222222",
       decidedAt: "2026-09-10T00:00:00.000Z",
     };
 
-    const bound = bindReceiptToDecision({ rail: "hedera" }, decisionWithUndefinedOptionals, {
+    const bound = bindReceiptToDecision({ rail: "hedera" }, decisionWithUndefinedReason, {
       topicId: "0.0.777",
       sequenceNumber: "1",
     });
@@ -197,7 +211,7 @@ describe("bindReceiptToDecision", () => {
     // on both sides, so the hash a third party recomputes from the receipt
     // still matches the one this script actually anchored.
     const roundTripped: unknown = JSON.parse(JSON.stringify(bound.authorizingDecision));
-    expect(hashReceipt(decisionWithUndefinedOptionals)).toBe(hashReceipt(roundTripped));
+    expect(hashReceipt(decisionWithUndefinedReason)).toBe(hashReceipt(roundTripped));
   });
 });
 
