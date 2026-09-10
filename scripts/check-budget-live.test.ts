@@ -112,7 +112,7 @@ describe("createLiveCheckBudget", () => {
     });
   });
 
-  it('maps decision "allow" with enforcing: 0 to an approval explaining nothing actually enforced it', async () => {
+  it('maps decision "allow" with enforcing: 0 to a decline, since nothing actually enforced it -- fails closed rather than granting unlimited spend by default', async () => {
     const { fetchImpl } = fakeAskReceipts({
       decision: "allow",
       considered: 0,
@@ -128,9 +128,28 @@ describe("createLiveCheckBudget", () => {
 
     const result = await checkBudget(REQUEST);
 
-    expect(result.verdict).toBe("approved");
+    expect(result.verdict).toBe("declined");
     expect(result.reason).toContain("no budget rule could actually enforce it");
     expect(result.reason).toContain("considered: 0, enforcing: 0");
+  });
+
+  it('maps decision "allow" with enforcing > 0 but considered rules that did not match to a plain approval (only enforcing: 0 fails closed)', async () => {
+    const { fetchImpl } = fakeAskReceipts({
+      decision: "allow",
+      considered: 3,
+      enforcing: 3,
+      matched: [],
+      notEvaluated: [],
+    });
+    const checkBudget = createLiveCheckBudget(
+      { url: MCP_URL, agentKey: AGENT_KEY },
+      describeEspresso,
+      fetchImpl,
+    );
+
+    const result = await checkBudget(REQUEST);
+
+    expect(result).toEqual({ verdict: "approved" });
   });
 
   it('maps decision "refuse" with a matched rule to a decline carrying its ruleId and humanSummary', async () => {
