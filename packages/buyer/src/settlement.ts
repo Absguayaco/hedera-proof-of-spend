@@ -61,9 +61,13 @@ export function parseSettlement(raw: string): HederaSettlement {
  * zeros, producing a shorter, WRONG dash-separated id that 404s on HashScan.
  * Re-padded to 9 digits here, right before it re-enters a string context,
  * rather than changing `validStartNanos`'s type: this is the one place a
- * dropped leading zero actually matters, and every other consumer of this
- * field (this package's own tests, `scripts/e2e.ts`'s receipt-building)
- * only ever needs the numeric value, never this exact zero-padded spelling.
+ * dropped leading zero produces a broken, unusable URL. `scripts/e2e.ts`'s
+ * receipt-building has the same underlying loss (it also re-stringifies
+ * this field, unpadded) -- deliberately left alone here, out of scope for
+ * this fix, and lower-priority than this URL: the receipt's own
+ * `transactionId` field still carries the correctly-spelled original, so
+ * the anchored evidence stays internally reconstructable even though one of
+ * its display fields is inexact, which this URL had no such fallback for.
  * Roughly one real transaction in ten has a nanos component starting with
  * "0", so this was silently wrong often enough to matter, not a rare edge
  * case -- confirmed against a real testnet transaction:

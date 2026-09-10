@@ -133,13 +133,25 @@ describe("createLiveCheckBudget", () => {
     expect(result.reason).toContain("considered: 0, enforcing: 0");
   });
 
-  it('maps decision "allow" with enforcing > 0 but considered rules that did not match to a plain approval (only enforcing: 0 fails closed)', async () => {
+  it('maps decision "allow" with a rule that WAS considered but could not enforce (enforcing: 0 despite considered > 0) to a decline -- this exact payload was observed live against the real askReceipts server', async () => {
+    // Real, live-observed response (see
+    // docs/superpowers/plans/2026-09-09-live-check-budget.md): a rule exists
+    // and was considered, but couldn't enforce because a needed fact (here,
+    // spend category) isn't known until after the purchase. `enforcing`
+    // alone must drive the fail-closed branch -- not `considered === 0` --
+    // or this exact real-world shape would slip through as approved.
     const { fetchImpl } = fakeAskReceipts({
       decision: "allow",
-      considered: 3,
-      enforcing: 3,
+      considered: 1,
+      enforcing: 0,
       matched: [],
-      notEvaluated: [],
+      notEvaluated: [
+        {
+          ruleId: "rule-restaurant-cap",
+          humanSummary: "cap restaurant spending at $100/month",
+          why: "category is assigned after the receipt is processed",
+        },
+      ],
     });
     const checkBudget = createLiveCheckBudget(
       { url: MCP_URL, agentKey: AGENT_KEY },
@@ -149,7 +161,8 @@ describe("createLiveCheckBudget", () => {
 
     const result = await checkBudget(REQUEST);
 
-    expect(result).toEqual({ verdict: "approved" });
+    expect(result.verdict).toBe("declined");
+    expect(result.reason).toContain("considered: 1, enforcing: 0");
   });
 
   it('maps decision "refuse" with a matched rule to a decline carrying its ruleId and humanSummary', async () => {
