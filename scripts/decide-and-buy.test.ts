@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AnchorResult } from "@proof-of-spend/anchor";
+import { canonicalize } from "@proof-of-spend/anchor";
 import type { BuyResult } from "@proof-of-spend/buyer";
 import type { CheckBudget, Decision } from "./decide-and-buy.ts";
-import { decideAndBuy } from "./decide-and-buy.ts";
+import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
 
 const AGENT = "agent-demo";
 const RESOURCE = "http://localhost:8402/buy/espresso";
@@ -210,5 +211,86 @@ describe("decideAndBuy", () => {
       expect((error as Error).cause).toBeInstanceOf(Error);
       expect(((error as Error).cause as Error).message).toBe("insufficient_funds");
     });
+  });
+});
+
+describe("linkReceiptToDecision", () => {
+  it("adds a structured decision reference to the receipt -- B2/B3: no longer only a string in an error message", () => {
+    const receipt = { rail: "hedera", amountTinybar: "15000000" };
+
+    const linked = linkReceiptToDecision(receipt, {
+      nonce: "11111111-1111-1111-1111-111111111111",
+      topicId: "0.0.777",
+      sequenceNumber: "42",
+    });
+
+    expect(linked).toEqual({
+      rail: "hedera",
+      amountTinybar: "15000000",
+      decision: {
+        nonce: "11111111-1111-1111-1111-111111111111",
+        topicId: "0.0.777",
+        sequenceNumber: "42",
+      },
+    });
+    // Every value canonicalize() will see must be a string -- confirms the
+    // linked receipt is still hashable under the hash-spec rule that
+    // rejects raw JS numbers (packages/anchor/src/hash.ts, rule 2).
+    expect(() => canonicalize(linked)).not.toThrow();
+  });
+
+  it("does not mutate the original receipt object", () => {
+    const receipt = { rail: "hedera" };
+
+    linkReceiptToDecision(receipt, { nonce: "n", topicId: "0.0.1", sequenceNumber: "1" });
+
+    expect(receipt).toEqual({ rail: "hedera" });
+  });
+});
+
+describe("decideAndBuy — B6 (nonce-replay enforcement, evaluated and closed by construction)", () => {
+  it("two calls for the identical request -- even concurrent -- are each independently anchored and each independently attempt a purchase, proving there is no separate 'redeem this decision later' step for a replay to target", async () => {
+    const anchorCalls: unknown[] = [];
+    const anchorImpl = (async (decision: unknown) => {
+      anchorCalls.push(decision);
+      return {
+        ok: true,
+        hash: "a".repeat(64),
+        topicId: "0.0.777",
+        sequenceNumber: String(anchorCalls.length),
+      } satisfies AnchorResult;
+    }) as Parameters<typeof decideAndBuy>[2];
+
+    const buyCalls: unknown[] = [];
+    const buyImpl = (async (request: unknown) => {
+      buyCalls.push(request);
+      return PURCHASE;
+    }) as Parameters<typeof decideAndBuy>[3];
+
+    // Same REQUEST object, called twice concurrently. If decideAndBuy() held
+    // any shared mutable state keyed by nonce, agent, or resource (a cache,
+    // a "decision already anchored" map -- anything a replay-check would
+    // need in order to exist), this would surface it: either a duplicate-
+    // suppression effect (one call short-circuiting instead of anchoring) or
+    // an observable race on shared state. Neither happens, because each
+    // call generates its own randomUUID() nonce and performs its own
+    // anchor-then-buy entirely inside one function invocation -- there is no
+    // persisted "decision" a second, later call could redeem.
+    const [first, second] = await Promise.all([
+      decideAndBuy(REQUEST, approve(), anchorImpl, buyImpl),
+      decideAndBuy(REQUEST, approve(), anchorImpl, buyImpl),
+    ]);
+
+    expect(first.decision.nonce).not.toBe(second.decision.nonce);
+    expect(first.outcome).toBe("purchased");
+    expect(second.outcome).toBe("purchased");
+    // Two genuinely separate anchor calls, not one memoized/shared result
+    // reused for both.
+    expect(anchorCalls).toHaveLength(2);
+    expect((anchorCalls[0] as Decision).nonce).not.toBe((anchorCalls[1] as Decision).nonce);
+    // Two genuinely separate purchase attempts, not a second call
+    // short-circuited by a "this decision was already redeemed" check --
+    // exactly the persisted state B6 was evaluated to not need.
+    expect(buyCalls).toHaveLength(2);
   });
 });

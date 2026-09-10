@@ -12,11 +12,18 @@
 import { Client, PrivateKey } from "@hiero-ledger/sdk";
 import { hashReceipt } from "./hash.ts";
 import { createTopic, submitHash } from "./topic.ts";
+import type { SubmitHashResult } from "./topic.ts";
 
 export interface AnchorResult {
   readonly ok: boolean;
   readonly hash: string;
   readonly topicId?: string;
+  /** The anchoring message's position in the topic's own ordered log,
+   *  present only when ok is true. Together with topicId this is what
+   *  closes Build Kit B2/B3 -- a structured, independently-checkable
+   *  reference a filed receipt can carry back to the decision that
+   *  authorized it (see scripts/decide-and-buy.ts's linkReceiptToDecision). */
+  readonly sequenceNumber?: string;
   /** Present when ok is false. Reported, never thrown. */
   readonly error?: string;
 }
@@ -27,7 +34,7 @@ export interface AnchorResult {
  *  both, matching how buyer's tests exercise real offline signing. */
 export interface HcsOps {
   readonly createTopic: (client: Client) => Promise<string>;
-  readonly submitHash: (client: Client, topicId: string, hash: string) => Promise<void>;
+  readonly submitHash: (client: Client, topicId: string, hash: string) => Promise<SubmitHashResult>;
 }
 
 function describeError(error: unknown): string {
@@ -81,13 +88,13 @@ export async function anchorReceipt(
       client.setOperator(opts.operatorId, operatorKey);
       const topicId = opts.topicId ?? (await hcs.createTopic(client));
       try {
-        await hcs.submitHash(client, topicId, hash);
+        const submitted = await hcs.submitHash(client, topicId, hash);
+        return { ok: true, hash, topicId, sequenceNumber: submitted.sequenceNumber };
       } catch (error) {
         // A topic may already exist even though submission failed — report it
         // so a retry reuses it instead of creating (and leaking) a new one.
         return { ok: false, hash, topicId, error: describeError(error) };
       }
-      return { ok: true, hash, topicId };
     } catch (error) {
       // Anchoring is best-effort: a failed anchor must never block a purchase.
       // The hash is still reported so the caller can retry or log it. If the
@@ -120,4 +127,4 @@ export async function anchorReceipt(
 
 export { hashReceipt, canonicalize, HASH_VERSION } from "./hash.ts";
 export { createTopic, submitHash } from "./topic.ts";
-export type { AnchorMessage } from "./topic.ts";
+export type { AnchorMessage, SubmitHashResult } from "./topic.ts";

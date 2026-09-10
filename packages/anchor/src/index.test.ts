@@ -3,6 +3,7 @@ import { PrivateKey } from "@hiero-ledger/sdk";
 import { describe, expect, it } from "vitest";
 import { hashReceipt } from "./hash.ts";
 import { anchorReceipt } from "./index.ts";
+import type { SubmitHashResult } from "./index.ts";
 
 const OPERATOR_ID = "0.0.99999";
 const OPERATOR_KEY = PrivateKey.generateECDSA().toStringDer();
@@ -11,12 +12,12 @@ const RECEIPT = { rail: "hedera", amount: "15000000" };
 function fakeHcs(
   overrides: Partial<{
     createTopic: (client: Client) => Promise<string>;
-    submitHash: (client: Client, topicId: string, hash: string) => Promise<void>;
+    submitHash: (client: Client, topicId: string, hash: string) => Promise<SubmitHashResult>;
   }> = {},
 ) {
   return {
     createTopic: overrides.createTopic ?? (async () => "0.0.777"),
-    submitHash: overrides.submitHash ?? (async () => {}),
+    submitHash: overrides.submitHash ?? (async () => ({ sequenceNumber: "1" })),
   };
 }
 
@@ -26,6 +27,7 @@ describe("anchorReceipt", () => {
     const hcs = fakeHcs({
       submitHash: async (_client, topicId, hash) => {
         submitted.push({ topicId, hash });
+        return { sequenceNumber: "1" };
       },
     });
 
@@ -35,8 +37,26 @@ describe("anchorReceipt", () => {
       hcs,
     );
 
-    expect(result).toEqual({ ok: true, hash: hashReceipt(RECEIPT), topicId: "0.0.777" });
+    expect(result).toEqual({
+      ok: true,
+      hash: hashReceipt(RECEIPT),
+      topicId: "0.0.777",
+      sequenceNumber: "1",
+    });
     expect(submitted).toEqual([{ topicId: "0.0.777", hash: hashReceipt(RECEIPT) }]);
+  });
+
+  it("reports the topic sequence number the HCS submission returned, converted to a decimal string", async () => {
+    const hcs = fakeHcs({ submitHash: async () => ({ sequenceNumber: "42" }) });
+
+    const result = await anchorReceipt(
+      RECEIPT,
+      { operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY },
+      hcs,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.sequenceNumber).toBe("42");
   });
 
   it("reuses a given topicId and never calls createTopic", async () => {
@@ -56,6 +76,7 @@ describe("anchorReceipt", () => {
 
     expect(result.ok).toBe(true);
     expect(result.topicId).toBe("0.0.123");
+    expect(result.sequenceNumber).toBe("1");
     expect(createCalled).toBe(false);
   });
 
@@ -77,6 +98,7 @@ describe("anchorReceipt", () => {
     // An unanchored receipt is worth more than a lost one — the hash is
     // still reported even though the anchor failed.
     expect(result.hash).toBe(hashReceipt(RECEIPT));
+    expect(result.sequenceNumber).toBeUndefined();
   });
 
   it("reports the newly created topicId when submitHash fails, so a retry can reuse it", async () => {
@@ -111,17 +133,11 @@ describe("anchorReceipt", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toBeTruthy();
-    // The invalid key must never be echoed back in the error — that's how a
-    // near-valid secret would leak into logs. PrivateKey.fromString's own
-    // error message includes its input verbatim, so this is not academic.
     expect(result.error).not.toContain(INVALID_KEY);
     expect(result.error).not.toContain(OPERATOR_KEY);
   });
 
   it("never throws: an invalid operator id becomes {ok:false, error}, not a rejected promise", async () => {
-    // Client.forTestnet().setOperator(operatorId, ...) parses operatorId
-    // synchronously and throws for a malformed id — this must be caught by
-    // the same try/finally as everything else, not escape as a rejection.
     await expect(
       anchorReceipt(
         RECEIPT,
@@ -133,7 +149,7 @@ describe("anchorReceipt", () => {
 
   it("never throws: a receipt that fails canonicalization becomes {ok:false, error}, empty hash", async () => {
     const result = await anchorReceipt(
-      { n: 1 }, // numbers are rejected by the canonicalization rule
+      { n: 1 },
       { operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY },
       fakeHcs(),
     );

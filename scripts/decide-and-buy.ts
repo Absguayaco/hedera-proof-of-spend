@@ -8,6 +8,27 @@
  * The real askReceipts check_budget call is out of scope here — CheckBudget
  * is a placeholder contract this module's caller must supply. See the
  * doc comment on CheckBudget below.
+ *
+ * Build Kit B6 (nonce-replay enforcement) was evaluated here, not merely
+ * deferred, and found to be a non-issue BY CONSTRUCTION -- not something
+ * left undone. decideAndBuy() decides and buys atomically, inside one
+ * function call: a fresh `randomUUID()` nonce is generated fresh on every
+ * invocation (see `nonce: randomUUID()` below), the resulting decision is
+ * anchored immediately, and the purchase attempt (or refusal) that follows
+ * happens inside that same call, before decideAndBuy() ever returns. There
+ * is no separate "redeem this decision later" step, no persisted decision
+ * record awaiting redemption, and no state shared across calls that a
+ * replayed nonce could target -- by the time any caller could observe a
+ * decision's nonce, that decision has already been fully consumed (anchored,
+ * and either bought or declined). A replay check exists to guard against
+ * reusing a credential to trigger a second, unintended effect; here the
+ * "credential" and the "effect" are produced and consumed inside the same
+ * synchronous call graph, so there is nothing left over for a replay to
+ * redeem. See the "B6" describe block in decide-and-buy.test.ts for a
+ * construction proof: two concurrent calls for the identical request each
+ * get their own nonce, each genuinely anchor, and each genuinely attempt
+ * their own purchase, with no shared state between them a replay could
+ * exploit.
  */
 import { randomUUID } from "node:crypto";
 import { anchorReceipt } from "@proof-of-spend/anchor";
@@ -88,6 +109,9 @@ export async function decideAndBuy(
     verdict: budget.verdict,
     budgetRuleId: budget.budgetRuleId,
     reason: budget.reason,
+    // Fresh on every call -- see this file's top doc comment ("Build Kit
+    // B6") for why that alone is enough to close the nonce-replay concern
+    // without a separate replay-check.
     nonce: randomUUID(),
     decidedAt: new Date().toISOString(),
   };
@@ -143,4 +167,63 @@ export async function decideAndBuy(
       { cause: error },
     );
   }
+}
+
+/** The structured reference linkReceiptToDecision() attaches to a filed
+ *  receipt. Every value here is a decimal STRING, per this project's
+ *  hash-spec rule that rejects raw JS numbers (packages/anchor/src/hash.ts's
+ *  canonicalize(), rule 2) -- nonce is already a string (randomUUID()),
+ *  topicId is already a string, and sequenceNumber is the decimal string
+ *  AnchorResult.sequenceNumber already carries (see
+ *  packages/anchor/src/topic.ts's SubmitHashResult). */
+export interface DecisionReceiptRef {
+  readonly nonce: string;
+  readonly topicId: string;
+  readonly sequenceNumber: string;
+}
+
+/**
+ * Structurally binds a filed receipt to the decision that authorized it —
+ * closes Build Kit B2/B3. Today that link exists only as a human-readable
+ * string inside decideAndBuy()'s own thrown purchase-failure error message
+ * ("Decision <nonce> was anchored at consensus ... but the purchase
+ * failed"); nothing structured and independently-checkable connects the two.
+ *
+ * Deliberately a small, pure function taking the three fields it needs
+ * rather than a whole Decision/AnchorResult object: it has no opinion on
+ * where those fields come from, keeps `topicId` and `sequenceNumber`
+ * REQUIRED (unlike AnchorResult's own optional fields) so a receipt can
+ * never be silently linked to a decision whose anchor didn't actually reach
+ * consensus with a recorded sequence number, and stays trivially testable
+ * without constructing a real Decision or AnchorResult. Wiring this into
+ * scripts/e2e.ts's buildReceipt() is a later, separate follow-up -- this is
+ * the primitive that follow-up will call.
+ *
+ * That future caller CANNOT get there by narrowing on `outcome === "purchased"`
+ * alone: AnchorResult.topicId and AnchorResult.sequenceNumber are both
+ * optional (`?: string`), and TypeScript does not narrow a nested sibling
+ * field's optionality from a discriminant on `outcome` -- under this repo's
+ * `strict: true`, `{ topicId: anchor.topicId, sequenceNumber:
+ * anchor.sequenceNumber }` still typechecks as `string | undefined` for both,
+ * which does not satisfy DecisionReceiptRef's required `string` fields. The
+ * caller needs its own explicit runtime guard, e.g.:
+ *   if (result.outcome === "purchased" && result.anchor.topicId && result.anchor.sequenceNumber) {
+ *     linkReceiptToDecision(receipt, {
+ *       nonce: result.decision.nonce,
+ *       topicId: result.anchor.topicId,
+ *       sequenceNumber: result.anchor.sequenceNumber,
+ *     });
+ *   }
+ * and must decide what to do in the (defensive-only -- anchor.ok true always
+ * sets both fields today) case where that guard fails: skip the link rather
+ * than call linkReceiptToDecision() with a fabricated value.
+ */
+export function linkReceiptToDecision(
+  receipt: Record<string, unknown>,
+  ref: DecisionReceiptRef,
+): Record<string, unknown> {
+  return {
+    ...receipt,
+    decision: { nonce: ref.nonce, topicId: ref.topicId, sequenceNumber: ref.sequenceNumber },
+  };
 }

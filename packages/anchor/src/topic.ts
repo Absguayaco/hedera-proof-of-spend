@@ -14,6 +14,18 @@ export interface AnchorMessage {
   readonly h: string;
 }
 
+/** What submitHash() reports back once the submission reaches consensus.
+ *  Carries the HCS topic sequence number -- the position this message holds
+ *  in the topic's own ordered log -- converted from the SDK's `Long` to a
+ *  decimal string (this project's numbers-travel-as-strings convention;
+ *  see packages/anchor/src/hash.ts's canonicalize() rule 2, which rejects
+ *  raw JS numbers outright). This is what closes Build Kit B2/B3: a
+ *  structured, independently-checkable reference a filed receipt can carry
+ *  back to the decision that authorized it. */
+export interface SubmitHashResult {
+  readonly sequenceNumber: string;
+}
+
 /** The exact bytes written to the topic. Pulled out on its own so the "only
  *  {v, h} leaves the system" claim is checkable without a network. */
 export function encodeAnchorMessage(hash: string): string {
@@ -35,12 +47,28 @@ export async function createTopic(client: Client): Promise<string> {
   return receipt.topicId.toString();
 }
 
-export async function submitHash(client: Client, topicId: string, hash: string): Promise<void> {
+export async function submitHash(
+  client: Client,
+  topicId: string,
+  hash: string,
+): Promise<SubmitHashResult> {
   const response = await new TopicMessageSubmitTransaction()
     .setTopicId(topicId)
     .setMessage(encodeAnchorMessage(hash))
     .execute(client);
   // getReceipt() throws ReceiptStatusError on a non-SUCCESS status — that
   // throw is what anchorReceipt()'s catch-everything contract relies on.
-  await response.getReceipt(client);
+  const receipt = await response.getReceipt(client);
+  // topicSequenceNumber is `Long | null` on the SDK's TransactionReceipt --
+  // populated specifically for TopicMessageSubmitTransaction receipts. A
+  // real Long is always an object (never falsy), so this is a strict
+  // null/undefined check, not a truthiness check that a real sequence
+  // number of 0 could ever accidentally trip.
+  if (receipt.topicSequenceNumber === null || receipt.topicSequenceNumber === undefined) {
+    throw new Error(
+      `TopicMessageSubmitTransaction succeeded but the receipt carried no topic sequence ` +
+        `number (topic ${topicId}).`,
+    );
+  }
+  return { sequenceNumber: receipt.topicSequenceNumber.toString() };
 }
