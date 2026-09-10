@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hashReceipt } from "./hash.ts";
-import { verify } from "./index.ts";
+import { fetchSettlementConsensusTimestamp, verify } from "./index.ts";
 
 const RECEIPT = { rail: "hedera", amount: "15000000" };
 const HASH = hashReceipt(RECEIPT);
@@ -171,6 +171,175 @@ describe("verify", () => {
 
     await expect(
       verify(RECEIPT, { topicId: "0.0.1", network: "toString" }, fetchImpl),
+    ).rejects.toThrow(/Unsupported network "toString"/);
+  });
+});
+
+function transactionsPage(entries: Array<{ consensus_timestamp: string; result?: string }>): Response {
+  const body = {
+    transactions: entries.map((entry) => ({
+      consensus_timestamp: entry.consensus_timestamp,
+      result: entry.result ?? "SUCCESS",
+    })),
+  };
+  return new Response(JSON.stringify(body), { status: 200 });
+}
+
+function notFound(): Response {
+  return new Response(JSON.stringify({ _status: { messages: [{ message: "Not found" }] } }), {
+    status: 404,
+  });
+}
+
+function fakeSleep(calls: number[]): (ms: number) => Promise<void> {
+  return async (ms: number) => {
+    calls.push(ms);
+  };
+}
+
+describe("fetchSettlementConsensusTimestamp", () => {
+  const TRANSACTION_ID = "0.0.7162784@1788825896.303987758";
+
+  it("converts the @/dot transaction id to the mirror node's dash form and queries it", async () => {
+    const requested: string[] = [];
+    const fetchImpl = (async (input: string | URL) => {
+      requested.push(String(input));
+      return transactionsPage([{ consensus_timestamp: "1788825904.988176169" }]);
+    }) as typeof fetch;
+
+    await fetchSettlementConsensusTimestamp(TRANSACTION_ID, {}, fetchImpl, fakeSleep([]));
+
+    expect(requested).toEqual([
+      "https://testnet.mirrornode.hedera.com/api/v1/transactions/0.0.7162784-1788825896-303987758",
+    ]);
+  });
+
+  it("reports the real consensus timestamp on a first-attempt hit", async () => {
+    const fetchImpl = (async () =>
+      transactionsPage([{ consensus_timestamp: "1788825904.988176169" }])) as typeof fetch;
+
+    const result = await fetchSettlementConsensusTimestamp(TRANSACTION_ID, {}, fetchImpl, fakeSleep([]));
+
+    expect(result).toEqual({
+      found: true,
+      transactionId: TRANSACTION_ID,
+      consensusTimestamp: "1788825904.988176169",
+      result: "SUCCESS",
+    });
+  });
+
+  it("retries on 404 (mirror-node ingestion lag), succeeding once the transaction appears", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      return call < 3 ? notFound() : transactionsPage([{ consensus_timestamp: "1788825904.988176169" }]);
+    }) as typeof fetch;
+    const sleepCalls: number[] = [];
+
+    const result = await fetchSettlementConsensusTimestamp(
+      TRANSACTION_ID,
+      {},
+      fetchImpl,
+      fakeSleep(sleepCalls),
+    );
+
+    expect(result.found).toBe(true);
+    expect(call).toBe(3);
+    expect(sleepCalls).toEqual([5_000, 5_000]);
+  });
+
+  it("treats a 200 response with an empty transactions array as not-yet-ingested and retries", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      return call < 2 ? transactionsPage([]) : transactionsPage([{ consensus_timestamp: "9.9" }]);
+    }) as typeof fetch;
+
+    const result = await fetchSettlementConsensusTimestamp(TRANSACTION_ID, {}, fetchImpl, fakeSleep([]));
+
+    expect(result.found).toBe(true);
+    expect(call).toBe(2);
+  });
+
+  it("reports not-found only after the retry budget (6 attempts) is exhausted", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      return notFound();
+    }) as typeof fetch;
+    const sleepCalls: number[] = [];
+
+    const result = await fetchSettlementConsensusTimestamp(
+      TRANSACTION_ID,
+      {},
+      fetchImpl,
+      fakeSleep(sleepCalls),
+    );
+
+    expect(result).toEqual({ found: false, transactionId: TRANSACTION_ID });
+    expect(call).toBe(6);
+    expect(sleepCalls).toHaveLength(5);
+  });
+
+  it("throws on a non-404 error status rather than silently reporting not-found", async () => {
+    const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
+
+    await expect(
+      fetchSettlementConsensusTimestamp(TRANSACTION_ID, {}, fetchImpl, fakeSleep([])),
+    ).rejects.toThrow(/500/);
+  });
+
+  it("throws a message naming the transaction id when a 200 response isn't a transactions page", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: "nope" }), { status: 200 })) as typeof fetch;
+
+    await expect(
+      fetchSettlementConsensusTimestamp(TRANSACTION_ID, {}, fetchImpl, fakeSleep([])),
+    ).rejects.toThrow(TRANSACTION_ID);
+  });
+
+  it("rejects a transaction id that isn't payer@seconds.nanos before ever calling fetch", async () => {
+    let fetchCalled = false;
+    const fetchImpl = (async () => {
+      fetchCalled = true;
+      return transactionsPage([]);
+    }) as typeof fetch;
+
+    await expect(
+      fetchSettlementConsensusTimestamp("not-a-transaction-id", {}, fetchImpl, fakeSleep([])),
+    ).rejects.toThrow(/Not a Hedera transaction id/);
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("queries the testnet mirror node by default and mainnet when asked", async () => {
+    const requested: string[] = [];
+    const fetchImpl = (async (input: string | URL) => {
+      requested.push(String(input));
+      return transactionsPage([{ consensus_timestamp: "1.1" }]);
+    }) as typeof fetch;
+
+    await fetchSettlementConsensusTimestamp(
+      TRANSACTION_ID,
+      { network: "mainnet" },
+      fetchImpl,
+      fakeSleep([]),
+    );
+
+    expect(requested[0]).toBe(
+      "https://mainnet-public.mirrornode.hedera.com/api/v1/transactions/0.0.7162784-1788825896-303987758",
+    );
+  });
+
+  it('rejects a "network" value inherited from Object.prototype instead of bypassing the guard', async () => {
+    const fetchImpl = (async () => transactionsPage([])) as typeof fetch;
+
+    await expect(
+      fetchSettlementConsensusTimestamp(
+        TRANSACTION_ID,
+        { network: "toString" },
+        fetchImpl,
+        fakeSleep([]),
+      ),
     ).rejects.toThrow(/Unsupported network "toString"/);
   });
 });
