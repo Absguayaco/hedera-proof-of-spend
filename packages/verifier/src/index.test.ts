@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hashReceipt } from "./hash.ts";
-import { fetchSettlementConsensusTimestamp, verify } from "./index.ts";
+import { fetchSettlementConsensusTimestamp, verify, verifyDecisionPrecedesSettlement } from "./index.ts";
+import type { VerifyResult } from "./index.ts";
 
 const RECEIPT = { rail: "hedera", amount: "15000000" };
 const HASH = hashReceipt(RECEIPT);
@@ -341,5 +342,129 @@ describe("fetchSettlementConsensusTimestamp", () => {
         fakeSleep([]),
       ),
     ).rejects.toThrow(/Unsupported network "toString"/);
+  });
+});
+
+describe("verifyDecisionPrecedesSettlement", () => {
+  const SETTLEMENT_TX_ID = "0.0.7162784@1788825896.303987758";
+
+  function matchResult(consensusTimestamp: string): VerifyResult {
+    return {
+      outcome: "match",
+      computedHash: "a".repeat(64),
+      consensusTimestamp,
+      sequenceNumber: 1,
+      hashscanUrl: "https://hashscan.io/testnet/topic/0.0.777/messages",
+    };
+  }
+
+  it("reports decision_before_settlement when the decision's consensus timestamp genuinely precedes the settlement's", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          transactions: [{ consensus_timestamp: "1788825904.988176169", result: "SUCCESS" }],
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+
+    const result = await verifyDecisionPrecedesSettlement(
+      matchResult("1788825896.100000000"),
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result).toEqual({
+      outcome: "decision_before_settlement",
+      settlementTransactionId: SETTLEMENT_TX_ID,
+      decisionConsensusTimestamp: "1788825896.100000000",
+      settlementConsensusTimestamp: "1788825904.988176169",
+    });
+  });
+
+  it("reports decision_not_before_settlement when the decision's timestamp is not strictly earlier", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          transactions: [{ consensus_timestamp: "1788825896.100000000", result: "SUCCESS" }],
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+
+    const result = await verifyDecisionPrecedesSettlement(
+      matchResult("1788825904.988176169"), // AFTER the settlement's consensus timestamp
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result.outcome).toBe("decision_not_before_settlement");
+  });
+
+  it("reports decision_not_before_settlement for equal timestamps -- strictly before, not before-or-equal", async () => {
+    const SAME = "1788825900.000000000";
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ transactions: [{ consensus_timestamp: SAME, result: "SUCCESS" }] }), {
+        status: 200,
+      })) as typeof fetch;
+
+    const result = await verifyDecisionPrecedesSettlement(
+      matchResult(SAME),
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result.outcome).toBe("decision_not_before_settlement");
+  });
+
+  it("reports decision_not_anchored without ever calling fetch, when the decision's verify() outcome wasn't a match", async () => {
+    let fetchCalled = false;
+    const fetchImpl = (async () => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({ transactions: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await verifyDecisionPrecedesSettlement(
+      { outcome: "missing", computedHash: "a".repeat(64) },
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result).toEqual({
+      outcome: "decision_not_anchored",
+      settlementTransactionId: SETTLEMENT_TX_ID,
+    });
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("reports settlement_not_found once the settlement lookup's own retry budget is exhausted", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ _status: { messages: [{ message: "Not found" }] } }), {
+        status: 404,
+      })) as typeof fetch;
+    const sleepCalls: number[] = [];
+
+    const result = await verifyDecisionPrecedesSettlement(
+      matchResult("1788825896.100000000"),
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async (ms: number) => {
+        sleepCalls.push(ms);
+      },
+    );
+
+    expect(result).toEqual({
+      outcome: "settlement_not_found",
+      settlementTransactionId: SETTLEMENT_TX_ID,
+      decisionConsensusTimestamp: "1788825896.100000000",
+    });
+    expect(sleepCalls).toHaveLength(5);
   });
 });

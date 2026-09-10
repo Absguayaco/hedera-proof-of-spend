@@ -256,3 +256,87 @@ export async function fetchSettlementConsensusTimestamp(
   // bound. Present only so TypeScript sees every path returning.
   return { found: false, transactionId };
 }
+
+export type OrderingOutcome =
+  | "decision_before_settlement"
+  | "decision_not_before_settlement"
+  | "decision_not_anchored"
+  | "settlement_not_found";
+
+export interface OrderingProofResult {
+  readonly outcome: OrderingOutcome;
+  readonly settlementTransactionId: string;
+  readonly decisionConsensusTimestamp?: string;
+  readonly settlementConsensusTimestamp?: string;
+}
+
+const CONSENSUS_TIMESTAMP = /^(\d+)\.(\d+)$/;
+
+/** Converts a mirror-node "seconds.nanoseconds" consensus timestamp into a
+ *  single BigInt of nanoseconds, so two timestamps can be compared exactly.
+ *  Lexicographic string comparison is NOT safe here: nothing guarantees the
+ *  two timestamps being compared have the same digit count, and the seconds
+ *  component will eventually grow an extra digit (Hedera's mainnet launched
+ *  in 2019 with 10-digit Unix seconds; that stays 10 digits until the year
+ *  2286, but is not a safe assumption to bake in silently). */
+function timestampToNanos(timestamp: string): bigint {
+  const match = CONSENSUS_TIMESTAMP.exec(timestamp);
+  if (!match) {
+    throw new Error(
+      `Not a mirror-node consensus timestamp (got "${timestamp}"). Expected "seconds.nanoseconds".`,
+    );
+  }
+  const [, seconds, nanos] = match;
+  return BigInt(seconds) * 1_000_000_000n + BigInt(nanos.padEnd(9, "0").slice(0, 9));
+}
+
+/**
+ * The A2/A3/A6/A7 ordering proof: given the decision anchor's own VerifyResult
+ * (from verify(), already reconciled against the mirror node) and the Hedera
+ * transaction id the payment settled under, reports whether the decision's
+ * anchor genuinely reached HCS consensus strictly before the payment
+ * settled -- checkable by a third party from public data alone, with no
+ * trust in the agent's own code sequencing required. This is what
+ * scripts/decide-and-buy.ts's "decision anchored before payment" ordering
+ * was, until now, enforced only by its own code sequencing to guarantee --
+ * this function is the independent, public check for it.
+ */
+export async function verifyDecisionPrecedesSettlement(
+  decisionVerify: VerifyResult,
+  settlementTransactionId: string,
+  opts: { network?: string } = {},
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
+): Promise<OrderingProofResult> {
+  if (decisionVerify.outcome !== "match" || decisionVerify.consensusTimestamp === undefined) {
+    return { outcome: "decision_not_anchored", settlementTransactionId };
+  }
+
+  const settlement = await fetchSettlementConsensusTimestamp(
+    settlementTransactionId,
+    opts,
+    fetchImpl,
+    sleepImpl,
+  );
+
+  if (!settlement.found || settlement.consensusTimestamp === undefined) {
+    return {
+      outcome: "settlement_not_found",
+      settlementTransactionId,
+      decisionConsensusTimestamp: decisionVerify.consensusTimestamp,
+    };
+  }
+
+  const decisionNanos = timestampToNanos(decisionVerify.consensusTimestamp);
+  const settlementNanos = timestampToNanos(settlement.consensusTimestamp);
+
+  return {
+    outcome:
+      decisionNanos < settlementNanos
+        ? "decision_before_settlement"
+        : "decision_not_before_settlement",
+    settlementTransactionId,
+    decisionConsensusTimestamp: decisionVerify.consensusTimestamp,
+    settlementConsensusTimestamp: settlement.consensusTimestamp,
+  };
+}
