@@ -242,7 +242,10 @@ Two pieces predate this event and are disclosed as prior work.
 
 **payment-rails-lab** was built for the NandaTown hackathon: a rail abstraction
 with two working rails (x402 and MPP), the buyer composition, a funding seam,
-the receipt contract, a spend cap, a budget guard and their tests.
+the receipt contract, a spend cap, a budget guard and their tests. None of it is
+in this repository. This submission needs exactly one rail, so it has no rail
+interface, no registry and no funding seam — check `packages/buyer`, whose
+dependency list has only ever carried one rail.
 
 **askReceipts** is our own hosted receipt ledger, reached over an authenticated
 MCP endpoint. It is consumed as a service, not extended, and no part of it is

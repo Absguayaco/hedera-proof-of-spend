@@ -33,7 +33,7 @@ point separately with esbuild.
 
 ## Decision: Node 24, and therefore no build step
 
-The first draft of this repo targeted Node 20, inherited from payment-rails-buyer.
+The first draft of this repo targeted Node 20.
 That was wrong on two counts, both found by checking rather than by reasoning:
 
 **Node 20 reached end of life on 2026-04-30** and receives no security updates.
@@ -201,10 +201,6 @@ enforcement without it would have passed CI and broken every Mac. `.npmrc` now
 lists all four packages that declare install scripts for this lockfile on
 both platforms: `esbuild@0.28.1`, `fsevents@2.3.3`, `protobufjs@7.6.6`,
 `protobufjs@8.0.1`.
-
-**payment-rails-buyer is still worth checking** — not because its allow-list is
-fake, but because whether it works there depends entirely on which npm is
-installed, and its comments do not say so.
 
 **When bumping any dependency, check its publish date first.** A version newer
 than seven days will fail to resolve and the failure does not explain itself.
