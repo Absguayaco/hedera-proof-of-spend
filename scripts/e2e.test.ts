@@ -9,6 +9,7 @@ import {
   verifyWithRetry,
 } from "./e2e.ts";
 import type { MenuItemPrice } from "./e2e.ts";
+import { hashReceipt } from "@proof-of-spend/anchor";
 import type { BuyResult } from "@proof-of-spend/buyer";
 import type { Decision } from "./decide-and-buy.ts";
 import type { VerifyResult } from "@proof-of-spend/verifier";
@@ -172,6 +173,31 @@ describe("bindReceiptToDecision", () => {
         sequenceNumber: undefined,
       }),
     ).toThrow(new RegExp(DECISION.nonce));
+  });
+
+  it("keeps authorizingDecision hashable identically to the original Decision, even when optional fields are present as undefined-valued keys (decideAndBuy()'s real shape when askReceipts returns no rule) and get dropped by a JSON round-trip", () => {
+    const decisionWithUndefinedOptionals: Decision = {
+      agent: "hedera-proof-of-spend-e2e-agent",
+      resource: "https://store.example/buy/espresso",
+      verdict: "approved",
+      budgetRuleId: undefined,
+      reason: undefined,
+      nonce: "22222222-2222-2222-2222-222222222222",
+      decidedAt: "2026-09-10T00:00:00.000Z",
+    };
+
+    const bound = bindReceiptToDecision({ rail: "hedera" }, decisionWithUndefinedOptionals, {
+      topicId: "0.0.777",
+      sequenceNumber: "1",
+    });
+
+    // authorizingDecision only ever reaches a third party after a JSON
+    // round-trip (it's printed as JSON in step 3, and anchored/rehashed as
+    // JSON): confirms hashReceipt() drops undefined-valued keys identically
+    // on both sides, so the hash a third party recomputes from the receipt
+    // still matches the one this script actually anchored.
+    const roundTripped: unknown = JSON.parse(JSON.stringify(bound.authorizingDecision));
+    expect(hashReceipt(decisionWithUndefinedOptionals)).toBe(hashReceipt(roundTripped));
   });
 });
 

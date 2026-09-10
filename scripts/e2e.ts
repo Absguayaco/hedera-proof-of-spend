@@ -521,6 +521,7 @@ async function main(): Promise<void> {
   let decisionVerifyResult: VerifyResult | undefined;
   let orderingResult: OrderingProofResult | undefined;
   let orderingCheckError: unknown;
+  let sequenceMatch: boolean | undefined;
   if (bindError) {
     console.log("Skipped: the receipt could not be bound to its decision (see Step 3 above).");
   } else {
@@ -531,10 +532,7 @@ async function main(): Promise<void> {
         console.log(`decision consensus timestamp: ${decisionVerifyResult.consensusTimestamp}`);
       }
       const referenceSequenceNumber = approvalResult.anchor.sequenceNumber;
-      const sequenceMatch = sequenceNumbersMatch(
-        decisionVerifyResult.sequenceNumber,
-        referenceSequenceNumber,
-      );
+      sequenceMatch = sequenceNumbersMatch(decisionVerifyResult.sequenceNumber, referenceSequenceNumber);
       console.log(
         `sequence number cross-check: mirror node reports ${decisionVerifyResult.sequenceNumber ?? "n/a"}, ` +
           `receipt's decision reference claims ${referenceSequenceNumber ?? "n/a"} -- ` +
@@ -547,7 +545,9 @@ async function main(): Promise<void> {
       );
       console.log(`ordering outcome: ${orderingResult.outcome}`);
       if (orderingResult.decisionConsensusTimestamp) {
-        console.log(`decision consensus timestamp: ${orderingResult.decisionConsensusTimestamp}`);
+        console.log(
+          `ordering proof's decision consensus timestamp: ${orderingResult.decisionConsensusTimestamp}`,
+        );
       }
       if (orderingResult.settlementConsensusTimestamp) {
         console.log(`settlement consensus timestamp: ${orderingResult.settlementConsensusTimestamp}`);
@@ -582,21 +582,62 @@ async function main(): Promise<void> {
       "would misrepresent what was actually checked, so this step is cut rather than faked.",
   );
 
-  const coreSuccess =
-    verifyResult?.outcome === "match" &&
-    decisionVerifyResult?.outcome === "match" &&
-    orderingResult?.outcome === "decision_before_settlement";
+  // Three independent checks now feed this summary (receipt verify, decision
+  // verify, ordering proof). Each can land in one of three buckets: it
+  // genuinely CONFIRMED the claim, it genuinely CONTRADICTED the claim (a
+  // negative that matters and must never be hidden behind an unrelated
+  // "could not check" elsewhere), or it could not be completed at all
+  // (mirror-node error, or -- for the ordering proof's settlement lookup
+  // specifically -- its own retry budget exhausted without ever finding the
+  // settlement transaction, the same "ingestion lag, not evidence" reasoning
+  // Step 5 already applies to receipt verification). A completed negative
+  // always outranks bindError and "could not check", so a real contradiction
+  // can never get reported as a shrug.
+  const receiptMatch = verifyResult?.outcome === "match";
+  const decisionMatch = decisionVerifyResult?.outcome === "match";
+  const orderingBeforeSettlement = orderingResult?.outcome === "decision_before_settlement";
+  const orderingInconclusive = orderingResult?.outcome === "settlement_not_found";
+  const orderingContradicted =
+    orderingResult !== undefined && !orderingBeforeSettlement && !orderingInconclusive;
+
+  const coreSuccess = receiptMatch && decisionMatch && sequenceMatch === true && orderingBeforeSettlement;
+
+  const checkedNegative =
+    (verifyResult !== undefined && !receiptMatch) ||
+    (decisionVerifyResult !== undefined && !decisionMatch) ||
+    sequenceMatch === false ||
+    orderingContradicted;
+
+  const couldNotCheck =
+    verifyCheckError !== undefined || orderingCheckError !== undefined || orderingInconclusive;
+
   console.log("");
   if (coreSuccess) {
     console.log(
       "RESULT: core proof (purchase, anchor, independent verification, and the decision-before-" +
         "settlement ordering proof) succeeded.",
     );
-  } else if (verifyCheckError || orderingCheckError) {
+  } else if (checkedNegative) {
+    console.log(
+      'RESULT: core proof did NOT hold -- this is "checked and did not match", not "could not ' +
+        `check" (receipt: "${verifyResult?.outcome ?? "not checked"}", decision: ` +
+        `"${decisionVerifyResult?.outcome ?? "not checked"}", sequence number cross-check: ` +
+        `${sequenceMatch === false ? "no match" : sequenceMatch === true ? "match" : "not checked"}, ` +
+        `ordering: "${orderingResult?.outcome ?? "not checked"}"). See the output above for which ` +
+        "check failed.",
+    );
+  } else if (bindError) {
+    console.log(
+      "RESULT: core proof's purchase and anchor succeeded, but the receipt could not be bound to " +
+        "its authorizing decision (see Step 3 above), so the decision verify and ordering proof " +
+        `did not run. Receipt verification alone: "${verifyResult?.outcome ?? "not checked"}".`,
+    );
+  } else if (couldNotCheck) {
     console.log(
       'RESULT: core proof\'s purchase and anchor succeeded, but independent verification or the ' +
-        'ordering proof could NOT be fully checked (mirror node error) -- this is "could not ' +
-        'check", not "checked and did not match". See the errors above.',
+        "ordering proof could NOT be fully checked (mirror node error, or the settlement lookup's " +
+        'own retry budget was exhausted) -- this is "could not check", not "checked and did not ' +
+        'match". See the errors/outcomes above.',
     );
   } else {
     console.log(
