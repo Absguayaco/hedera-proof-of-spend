@@ -1,7 +1,7 @@
 import { PrivateKey } from "@x402/hedera";
 import type { PaymentRequired, SettleResponse } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
-import { buyResource } from "./index.ts";
+import { buyResource, quoteResource, settleQuote } from "./index.ts";
 
 const OPERATOR_ID = "0.0.99999";
 const OPERATOR_KEY = PrivateKey.generateECDSA().toStringDer();
@@ -178,5 +178,78 @@ describe("buyResource", () => {
     await expect(
       buyResource({ url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY }, fetchImpl),
     ).rejects.toThrow(/expected 402/);
+  });
+});
+
+describe("quoteResource", () => {
+  it("returns the store's live-quoted tinybar amount and payee, fetching the challenge exactly once", async () => {
+    let callCount = 0;
+    const fetchImpl = (async () => {
+      callCount += 1;
+      return paymentRequiredResponse("hedera:testnet");
+    }) as typeof fetch;
+
+    const quote = await quoteResource(URL, fetchImpl);
+
+    expect(quote.amountTinybar).toBe("15000000");
+    expect(quote.payTo).toBe(PAY_TO);
+    expect(callCount).toBe(1);
+  });
+
+  it("still refuses a non-testnet network quote, before any payment machinery is touched", async () => {
+    const fetchImpl = (async () => paymentRequiredResponse("hedera:mainnet")) as typeof fetch;
+
+    await expect(quoteResource(URL, fetchImpl)).rejects.toThrow(/Refusing to pay/);
+  });
+
+  it("still refuses a non-HBAR asset", async () => {
+    const fetchImpl = (async () =>
+      paymentRequiredResponse("hedera:testnet", { asset: "0.0.456858" })) as typeof fetch;
+
+    await expect(quoteResource(URL, fetchImpl)).rejects.toThrow(/quoted asset "0\.0\.456858"/);
+  });
+});
+
+describe("settleQuote", () => {
+  it("pays against an already-obtained quote without re-fetching the challenge", async () => {
+    let callCount = 0;
+    const fetchImpl = (async () => {
+      callCount += 1;
+      return settledResponse();
+    }) as typeof fetch;
+
+    const quote = await quoteResource(URL, (async () => {
+      callCount += 1;
+      return paymentRequiredResponse("hedera:testnet");
+    }) as typeof fetch);
+    callCount = 0; // reset: only settleQuote()'s own fetch count matters below
+
+    const result = await settleQuote(URL, quote, OPERATOR_ID, OPERATOR_KEY, fetchImpl);
+
+    expect(result.amountTinybar).toBe(15_000_000n);
+    expect(result.settlement.transactionId).toBe("0.0.99999@1699999999.123456789");
+    // Exactly one fetch (the payment attempt) -- the challenge was reused,
+    // not fetched again.
+    expect(callCount).toBe(1);
+  });
+});
+
+describe("buyResource (composition)", () => {
+  it("is exactly quoteResource() followed by settleQuote() against the same quote", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      return call === 1 ? paymentRequiredResponse("hedera:testnet") : settledResponse();
+    }) as typeof fetch;
+
+    const result = await buyResource(
+      { url: URL, operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY },
+      fetchImpl,
+    );
+
+    // Same two-call shape as the challenge-then-pay sequence quoteResource()
+    // and settleQuote() each contribute one of.
+    expect(call).toBe(2);
+    expect(result.amountTinybar).toBe(15_000_000n);
   });
 });

@@ -29,6 +29,27 @@ export interface BuyResult {
 }
 
 /**
+ * A validated x402 payment quote for one resource: the store's real,
+ * live-quoted amount and payee, checked against this package's one
+ * supported rail (hedera:testnet, native HBAR, exact scheme) -- everything
+ * buyResource() used to validate before signing anything, now available on
+ * its own so a caller (scripts/decide-and-buy.ts) can learn what a purchase
+ * actually costs, and to whom, BEFORE deciding whether to pay -- and can
+ * then pay against this EXACT quote via settleQuote(), instead of fetching
+ * (and risking a different) quote a second time.
+ *
+ * `paymentRequired`/`accepted` are SDK plumbing settleQuote() needs to
+ * actually construct and sign a payment. Any other caller only ever reads
+ * `amountTinybar`/`payTo` and should treat the rest as opaque.
+ */
+export interface HederaQuote {
+  readonly amountTinybar: string;
+  readonly payTo: string;
+  readonly paymentRequired: PaymentRequired;
+  readonly accepted: PaymentRequired["accepts"][number];
+}
+
+/**
  * A rejected payment can come back as a fresh 402 challenge rather than a
  * settlement failure. When it does, that challenge's `error` field carries
  * the facilitator's specific rejection reason — this decodes it, returning
@@ -51,25 +72,19 @@ function rejectionReason(
 }
 
 /**
- * Buys one resource: GET, expect 402, pay via the Hedera exact scheme, retry.
- *
- * Orchestrated explicitly rather than via `wrapFetchWithPayment` so that
- * `assertChallengeNetwork()` — this package's whole reason a raw private key
- * is acceptable to sign from — is what actually fires, with its specific
- * message, on a bad network quote. `wrapFetchWithPayment` would instead
- * surface a generic "no scheme registered" failure from `@x402/core`,
- * bypassing the guard entirely.
- *
- * `fetchImpl` defaults to the global `fetch` and exists so tests can inject a
- * fake HTTP layer without touching `globalThis`.
+ * Fetches the x402 challenge for a resource and validates it against this
+ * package's one supported rail, before any signer is built or key material
+ * is used — the challenge is what actually decides where the money goes and
+ * what it buys, so it is checked first, not just against whatever network
+ * the SDK happens to be configured for.
  */
-export async function buyResource(
-  request: BuyRequest,
+export async function quoteResource(
+  url: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<BuyResult> {
-  const challenge = await fetchImpl(request.url);
+): Promise<HederaQuote> {
+  const challenge = await fetchImpl(url);
   if (challenge.status !== 402) {
-    throw new Error(`expected 402 from ${request.url}, got ${challenge.status}`);
+    throw new Error(`expected 402 from ${url}, got ${challenge.status}`);
   }
 
   const challengeBody = await challenge.json().catch(() => undefined);
@@ -79,12 +94,8 @@ export async function buyResource(
 
   const [quoted] = paymentRequired.accepts;
   if (!quoted) {
-    throw new Error(`${request.url} did not quote a price`);
+    throw new Error(`${url} did not quote a price`);
   }
-  // The challenge is what actually decides where the money goes and what it
-  // buys, so it is checked before any signer is built or key material is
-  // used — not just against whatever network the SDK happens to be
-  // configured for, but against this package's one supported rail.
   assertChallengeNetwork(quoted.network);
   if (quoted.asset !== "0.0.0") {
     throw new Error(`store quoted asset "${quoted.asset}", not native HBAR (0.0.0)`);
@@ -93,10 +104,23 @@ export async function buyResource(
     throw new Error(`store quoted scheme "${quoted.scheme}", not "exact"`);
   }
 
-  const signer = createClientHederaSigner(
-    request.operatorId,
-    PrivateKey.fromString(request.operatorKey),
-  );
+  return { amountTinybar: quoted.amount, payTo: quoted.payTo, paymentRequired, accepted: quoted };
+}
+
+/**
+ * Pays a quote already obtained from quoteResource() and returns the settled
+ * purchase. Split out from buyResource() so a caller can anchor a decision
+ * against the exact quote it is about to pay, rather than fetching (and
+ * risking a different) one a second time.
+ */
+export async function settleQuote(
+  url: string,
+  quote: HederaQuote,
+  operatorId: string,
+  operatorKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BuyResult> {
+  const signer = createClientHederaSigner(operatorId, PrivateKey.fromString(operatorKey));
   // x402Client's default spend controls only allow the network's "default
   // asset" (USDC on hedera:testnet, per @x402/hedera's DEFAULT_ASSETS table)
   // — native HBAR would be rejected before assertChallengeNetwork ever runs.
@@ -124,16 +148,16 @@ export async function buyResource(
     .register(ALLOWED_X402_NETWORK, new ExactHederaScheme(signer));
   const httpClient = new x402HTTPClient(client);
 
-  // Narrowed to just the entry the guard above validated, so the SDK cannot
-  // select and pay a different `accepts[]` entry than the one
-  // `amountTinybar` below is read from.
+  // Narrowed to just the entry quoteResource() validated, so the SDK cannot
+  // select and pay a different `accepts[]` entry than the one this quote's
+  // amountTinybar/payTo were read from.
   const paymentPayload = await httpClient.createPaymentPayload({
-    ...paymentRequired,
-    accepts: [quoted],
+    ...quote.paymentRequired,
+    accepts: [quote.accepted],
   });
   const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
 
-  const paid = await fetchImpl(request.url, { headers: paymentHeaders });
+  const paid = await fetchImpl(url, { headers: paymentHeaders });
 
   let settleResponse: SettleResponse;
   try {
@@ -164,7 +188,7 @@ export async function buyResource(
   }
 
   const settlement = parseSettlement(settleResponse.transaction);
-  const amountTinybar = BigInt(quoted.amount);
+  const amountTinybar = BigInt(quote.accepted.amount);
   const body = await paid.json().catch((error: unknown) => {
     throw new Error(
       `store returned an unparseable body after a successful payment (status ${paid.status}, ` +
@@ -174,6 +198,25 @@ export async function buyResource(
   });
 
   return { body, amountTinybar, settlement };
+}
+
+/**
+ * Buys one resource: GET, expect 402, pay via the Hedera exact scheme, retry.
+ *
+ * Orchestrated explicitly rather than via `wrapFetchWithPayment` so that
+ * `assertChallengeNetwork()` — this package's whole reason a raw private key
+ * is acceptable to sign from — is what actually fires, with its specific
+ * message, on a bad network quote (inside quoteResource(), called first).
+ *
+ * `fetchImpl` defaults to the global `fetch` and exists so tests can inject a
+ * fake HTTP layer without touching `globalThis`.
+ */
+export async function buyResource(
+  request: BuyRequest,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BuyResult> {
+  const quote = await quoteResource(request.url, fetchImpl);
+  return settleQuote(request.url, quote, request.operatorId, request.operatorKey, fetchImpl);
 }
 
 export { assertTestnet, assertChallengeNetwork } from "./guard.ts";
