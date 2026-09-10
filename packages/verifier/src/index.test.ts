@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { hashReceipt } from "./hash.ts";
-import { fetchSettlementConsensusTimestamp, verify, verifyDecisionPrecedesSettlement } from "./index.ts";
+import {
+  fetchSettlementConsensusTimestamp,
+  sequenceNumbersMatch,
+  verify,
+  verifyDecisionPrecedesSettlement,
+} from "./index.ts";
 import type { VerifyResult } from "./index.ts";
 
 const RECEIPT = { rail: "hedera", amount: "15000000" };
@@ -360,12 +365,7 @@ describe("verifyDecisionPrecedesSettlement", () => {
 
   it("reports decision_before_settlement when the decision's consensus timestamp genuinely precedes the settlement's", async () => {
     const fetchImpl = (async () =>
-      new Response(
-        JSON.stringify({
-          transactions: [{ consensus_timestamp: "1788825904.988176169", result: "SUCCESS" }],
-        }),
-        { status: 200 },
-      )) as typeof fetch;
+      transactionsPage([{ consensus_timestamp: "1788825904.988176169", result: "SUCCESS" }])) as typeof fetch;
 
     const result = await verifyDecisionPrecedesSettlement(
       matchResult("1788825896.100000000"),
@@ -385,12 +385,7 @@ describe("verifyDecisionPrecedesSettlement", () => {
 
   it("reports decision_not_before_settlement when the decision's timestamp is not strictly earlier", async () => {
     const fetchImpl = (async () =>
-      new Response(
-        JSON.stringify({
-          transactions: [{ consensus_timestamp: "1788825896.100000000", result: "SUCCESS" }],
-        }),
-        { status: 200 },
-      )) as typeof fetch;
+      transactionsPage([{ consensus_timestamp: "1788825896.100000000", result: "SUCCESS" }])) as typeof fetch;
 
     const result = await verifyDecisionPrecedesSettlement(
       matchResult("1788825904.988176169"), // AFTER the settlement's consensus timestamp
@@ -406,9 +401,7 @@ describe("verifyDecisionPrecedesSettlement", () => {
   it("reports decision_not_before_settlement for equal timestamps -- strictly before, not before-or-equal", async () => {
     const SAME = "1788825900.000000000";
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ transactions: [{ consensus_timestamp: SAME, result: "SUCCESS" }] }), {
-        status: 200,
-      })) as typeof fetch;
+      transactionsPage([{ consensus_timestamp: SAME, result: "SUCCESS" }])) as typeof fetch;
 
     const result = await verifyDecisionPrecedesSettlement(
       matchResult(SAME),
@@ -425,7 +418,7 @@ describe("verifyDecisionPrecedesSettlement", () => {
     let fetchCalled = false;
     const fetchImpl = (async () => {
       fetchCalled = true;
-      return new Response(JSON.stringify({ transactions: [] }), { status: 200 });
+      return transactionsPage([]);
     }) as typeof fetch;
 
     const result = await verifyDecisionPrecedesSettlement(
@@ -444,10 +437,7 @@ describe("verifyDecisionPrecedesSettlement", () => {
   });
 
   it("reports settlement_not_found once the settlement lookup's own retry budget is exhausted", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ _status: { messages: [{ message: "Not found" }] } }), {
-        status: 404,
-      })) as typeof fetch;
+    const fetchImpl = (async () => notFound()) as typeof fetch;
     const sleepCalls: number[] = [];
 
     const result = await verifyDecisionPrecedesSettlement(
@@ -466,5 +456,73 @@ describe("verifyDecisionPrecedesSettlement", () => {
       decisionConsensusTimestamp: "1788825896.100000000",
     });
     expect(sleepCalls).toHaveLength(5);
+  });
+
+  it("reports settlement_failed when the settlement transaction reached consensus but FAILED, even though its timestamp would otherwise pass the ordering check", async () => {
+    const fetchImpl = (async () =>
+      transactionsPage([
+        { consensus_timestamp: "1788825904.988176169", result: "INSUFFICIENT_PAYER_BALANCE" },
+      ])) as typeof fetch;
+
+    const result = await verifyDecisionPrecedesSettlement(
+      matchResult("1788825896.100000000"), // genuinely before the settlement timestamp
+      SETTLEMENT_TX_ID,
+      {},
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result).toEqual({
+      outcome: "settlement_failed",
+      settlementTransactionId: SETTLEMENT_TX_ID,
+      decisionConsensusTimestamp: "1788825896.100000000",
+      settlementConsensusTimestamp: "1788825904.988176169",
+    });
+  });
+
+  it("throws rather than silently mis-ordering when the settlement's consensus_timestamp is malformed", async () => {
+    const fetchImpl = (async () =>
+      transactionsPage([{ consensus_timestamp: "not-a-timestamp", result: "SUCCESS" }])) as typeof fetch;
+
+    await expect(
+      verifyDecisionPrecedesSettlement(
+        matchResult("1788825896.100000000"),
+        SETTLEMENT_TX_ID,
+        {},
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/Not a mirror-node consensus timestamp/);
+  });
+
+  it("rejects rather than silently truncates a nanoseconds component longer than 9 digits", async () => {
+    const fetchImpl = (async () =>
+      transactionsPage([{ consensus_timestamp: "1788825904.9881761690", result: "SUCCESS" }])) as typeof fetch;
+
+    await expect(
+      verifyDecisionPrecedesSettlement(
+        matchResult("1788825896.100000000"),
+        SETTLEMENT_TX_ID,
+        {},
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/nanoseconds component has more than 9 digits/);
+  });
+});
+
+describe("sequenceNumbersMatch", () => {
+  it("matches a mirror-node number against its decimal-string counterpart", () => {
+    expect(sequenceNumbersMatch(42, "42")).toBe(true);
+  });
+
+  it("rejects genuinely different sequence numbers", () => {
+    expect(sequenceNumbersMatch(42, "43")).toBe(false);
+  });
+
+  it("treats either side being undefined as no match, not a coincidental pass", () => {
+    expect(sequenceNumbersMatch(undefined, "42")).toBe(false);
+    expect(sequenceNumbersMatch(42, undefined)).toBe(false);
+    expect(sequenceNumbersMatch(undefined, undefined)).toBe(false);
   });
 });

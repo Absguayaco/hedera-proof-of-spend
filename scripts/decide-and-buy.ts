@@ -197,9 +197,26 @@ export interface DecisionReceiptRef {
  * consensus with a recorded sequence number, and stays trivially testable
  * without constructing a real Decision or AnchorResult. Wiring this into
  * scripts/e2e.ts's buildReceipt() is a later, separate follow-up -- this is
- * the primitive that follow-up will call, with
- * `{ nonce: decision.nonce, topicId: anchor.topicId, sequenceNumber: anchor.sequenceNumber }`
- * once outcome === "purchased" has confirmed those fields are present.
+ * the primitive that follow-up will call.
+ *
+ * That future caller CANNOT get there by narrowing on `outcome === "purchased"`
+ * alone: AnchorResult.topicId and AnchorResult.sequenceNumber are both
+ * optional (`?: string`), and TypeScript does not narrow a nested sibling
+ * field's optionality from a discriminant on `outcome` -- under this repo's
+ * `strict: true`, `{ topicId: anchor.topicId, sequenceNumber:
+ * anchor.sequenceNumber }` still typechecks as `string | undefined` for both,
+ * which does not satisfy DecisionReceiptRef's required `string` fields. The
+ * caller needs its own explicit runtime guard, e.g.:
+ *   if (result.outcome === "purchased" && result.anchor.topicId && result.anchor.sequenceNumber) {
+ *     linkReceiptToDecision(receipt, {
+ *       nonce: result.decision.nonce,
+ *       topicId: result.anchor.topicId,
+ *       sequenceNumber: result.anchor.sequenceNumber,
+ *     });
+ *   }
+ * and must decide what to do in the (defensive-only -- anchor.ok true always
+ * sets both fields today) case where that guard fails: skip the link rather
+ * than call linkReceiptToDecision() with a fabricated value.
  */
 export function linkReceiptToDecision(
   receipt: Record<string, unknown>,

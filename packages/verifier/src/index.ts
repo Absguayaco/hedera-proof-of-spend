@@ -27,7 +27,14 @@ export interface VerifyResult {
   /** Consensus timestamp of the anchoring message, when one was found. */
   readonly consensusTimestamp?: string;
   /** The anchoring message's position in the topic's own ordered log, read
-   *  straight from the mirror node. Present only on a "match". */
+   *  straight from the mirror node. Present only on a "match". A plain JSON
+   *  number, NOT the same representation as its counterpart:
+   *  packages/anchor's AnchorResult.sequenceNumber and
+   *  scripts/decide-and-buy.ts's DecisionReceiptRef.sequenceNumber are both
+   *  decimal STRINGS (the SDK's `Long`, converted). Comparing this field
+   *  against either of those with `===` always returns false, even on a true
+   *  match ("42" === 42 is false) -- use the sequenceNumbersMatch() helper
+   *  below instead of writing that comparison at a call site. */
   readonly sequenceNumber?: number;
   /** Link to the same message on HashScan, on a network neither party controls. */
   readonly hashscanUrl?: string;
@@ -129,8 +136,6 @@ export async function verify(
   // "altered" is not reachable here; every non-match reports "missing".
   return { outcome: "missing", computedHash };
 }
-
-export { hashReceipt, canonicalize, HASH_VERSION } from "./hash.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -261,7 +266,8 @@ export type OrderingOutcome =
   | "decision_before_settlement"
   | "decision_not_before_settlement"
   | "decision_not_anchored"
-  | "settlement_not_found";
+  | "settlement_not_found"
+  | "settlement_failed";
 
 export interface OrderingProofResult {
   readonly outcome: OrderingOutcome;
@@ -287,7 +293,13 @@ function timestampToNanos(timestamp: string): bigint {
     );
   }
   const [, seconds, nanos] = match;
-  return BigInt(seconds) * 1_000_000_000n + BigInt(nanos.padEnd(9, "0").slice(0, 9));
+  if (nanos.length > 9) {
+    throw new Error(
+      `Not a mirror-node consensus timestamp (got "${timestamp}"): nanoseconds component ` +
+        `has more than 9 digits.`,
+    );
+  }
+  return BigInt(seconds) * 1_000_000_000n + BigInt(nanos.padEnd(9, "0"));
 }
 
 /**
@@ -300,6 +312,19 @@ function timestampToNanos(timestamp: string): bigint {
  * scripts/decide-and-buy.ts's "decision anchored before payment" ordering
  * was, until now, enforced only by its own code sequencing to guarantee --
  * this function is the independent, public check for it.
+ *
+ * A Hedera transaction that FAILS (e.g. INSUFFICIENT_PAYER_BALANCE) still
+ * reaches consensus and still gets a real consensus_timestamp -- reaching
+ * consensus is not the same as the payment settling. So before comparing
+ * timestamps, this checks the settlement's own reported `result`: anything
+ * other than "SUCCESS" short-circuits to the "settlement_failed" outcome
+ * rather than computing (and misreporting) an ordering.
+ *
+ * Can throw rather than resolve to an outcome: a malformed
+ * settlementTransactionId, a non-404 mirror-node error status, or a 200
+ * response that isn't shaped like a transactions page (all from the
+ * underlying fetchSettlementConsensusTimestamp() lookup), or a malformed
+ * consensus_timestamp string on either the decision or the settlement side.
  */
 export async function verifyDecisionPrecedesSettlement(
   decisionVerify: VerifyResult,
@@ -327,6 +352,19 @@ export async function verifyDecisionPrecedesSettlement(
     };
   }
 
+  if (settlement.result !== "SUCCESS") {
+    // Reached consensus but FAILED (e.g. INSUFFICIENT_PAYER_BALANCE) -- not
+    // the same as the payment settling, so no ordering claim is made. Both
+    // timestamps are already known and are included for a caller to display,
+    // even though "before/after" isn't a meaningful question here.
+    return {
+      outcome: "settlement_failed",
+      settlementTransactionId,
+      decisionConsensusTimestamp: decisionVerify.consensusTimestamp,
+      settlementConsensusTimestamp: settlement.consensusTimestamp,
+    };
+  }
+
   const decisionNanos = timestampToNanos(decisionVerify.consensusTimestamp);
   const settlementNanos = timestampToNanos(settlement.consensusTimestamp);
 
@@ -339,4 +377,28 @@ export async function verifyDecisionPrecedesSettlement(
     decisionConsensusTimestamp: decisionVerify.consensusTimestamp,
     settlementConsensusTimestamp: settlement.consensusTimestamp,
   };
+}
+
+export { hashReceipt, canonicalize, HASH_VERSION } from "./hash.ts";
+
+/**
+ * The one place packages/anchor's decimal-string sequenceNumber (the SDK's
+ * `Long`, converted -- AnchorResult.sequenceNumber,
+ * scripts/decide-and-buy.ts's DecisionReceiptRef.sequenceNumber) and this
+ * package's plain-number sequenceNumber (VerifyResult.sequenceNumber, read
+ * straight off the mirror node's JSON) need to be reconciled. A naive
+ * `===` between them is always false, even for a true match, because
+ * `"42" === 42` is false in JavaScript -- this closes that gap once, here,
+ * instead of at every future call site that wires the two together. Either
+ * side being `undefined` is NOT a match: two unrelated "we don't know" values
+ * are not evidence of agreement.
+ */
+export function sequenceNumbersMatch(
+  verifySequenceNumber: number | undefined,
+  referenceSequenceNumber: string | undefined,
+): boolean {
+  if (verifySequenceNumber === undefined || referenceSequenceNumber === undefined) {
+    return false;
+  }
+  return String(verifySequenceNumber) === referenceSequenceNumber;
 }
