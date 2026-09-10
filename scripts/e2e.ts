@@ -10,7 +10,18 @@
  * live, against real testnet infrastructure: a real check_budget call, a
  * real x402 payment in HBAR, a real receipt, a real HCS anchor, a real
  * independent re-verification against a public mirror node, and real
- * HashScan links. Steps 1-2 are one decideAndBuy() call under the hood (see
+ * HashScan links.
+ *
+ * The receipt filed in step 3 also carries the full Decision object that
+ * authorized the purchase (not just a hash reference to it), plus a
+ * structured {nonce, topicId, sequenceNumber} pointer back to that
+ * decision's own HCS anchor (Build Kit B2/B3). Between steps 5 and 6, this
+ * script independently re-verifies that decision's anchor and then checks
+ * that it reached HCS consensus strictly before the payment settled (Build
+ * Kit A2/A3/A6/A7) -- the same two checks a third party holding only the
+ * filed receipt and public mirror-node access could run themselves.
+ *
+ * Steps 1-2 are one decideAndBuy() call under the hood (see
  * scripts/decide-and-buy.ts's own doc comment) but are reported here as
  * two steps for narrative clarity, matching the README.
  *
@@ -442,9 +453,23 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- Step 3: file the receipt ---
+  // --- Step 3: file the receipt, bound to the decision that authorized it ---
   section('Step 3: file the settled purchase as a receipt on rail "hedera"');
-  const receipt = buildReceipt(APPROVAL_SLUG, purchase);
+  const baseReceipt = buildReceipt(APPROVAL_SLUG, purchase);
+  let receipt: Record<string, unknown> = baseReceipt;
+  let bindError: unknown;
+  try {
+    receipt = bindReceiptToDecision(baseReceipt, approvalResult.decision, {
+      topicId: approvalResult.anchor.topicId,
+      sequenceNumber: approvalResult.anchor.sequenceNumber,
+    });
+  } catch (error) {
+    bindError = error;
+    console.error(`Could not bind the receipt to its authorizing decision: ${describeError(error)}`);
+    console.error(
+      "Continuing with an unbound receipt -- the ordering proof (A2/A3/A6/A7) below will be skipped.",
+    );
+  }
   console.log(JSON.stringify(receipt, null, 2));
 
   // --- Step 4: anchor the receipt hash to HCS ---
@@ -461,25 +486,13 @@ async function main(): Promise<void> {
   // HCS consensus (step 4) and the public mirror node's REST API are
   // separate systems: the mirror node ingests messages *after* consensus,
   // with real-world lag (this repo's own prior work measured an ~8.68s gap
-  // on a real transaction). A single, immediate verify() call would
-  // intermittently report "missing" on a run that actually succeeded, so
-  // this polls for up to ~30s before treating "missing" as genuine.
+  // on a real transaction). verifyWithRetry() polls for up to ~30s before
+  // treating "missing" as genuine.
   section("Step 5: the verifier re-hashes the receipt independently and checks the topic");
-  const MIRROR_NODE_MAX_ATTEMPTS = 6;
-  const MIRROR_NODE_RETRY_DELAY_MS = 5_000;
   let verifyResult: VerifyResult | undefined;
   let verifyCheckError: unknown;
   try {
-    verifyResult = await verify(receipt, { topicId });
-    let attempt = 1;
-    while (verifyResult.outcome === "missing" && attempt < MIRROR_NODE_MAX_ATTEMPTS) {
-      attempt += 1;
-      console.log(
-        `not yet visible on the mirror node, retrying (${attempt}/${MIRROR_NODE_MAX_ATTEMPTS})...`,
-      );
-      await sleep(MIRROR_NODE_RETRY_DELAY_MS);
-      verifyResult = await verify(receipt, { topicId });
-    }
+    verifyResult = await verifyWithRetry(receipt, { topicId }, "receipt");
     console.log(`outcome: ${verifyResult.outcome}`);
     console.log(`computed hash: ${verifyResult.computedHash}`);
     if (verifyResult.consensusTimestamp) {
@@ -489,7 +502,7 @@ async function main(): Promise<void> {
     // The purchase (step 2) and HCS anchor (step 4) already genuinely
     // succeeded by this point -- a mirror-node failure here is "could not
     // check", not "checked and did not match", and must not read as either
-    // a verification mismatch or take down steps 6-7 and the final summary.
+    // a verification mismatch or take down the rest of the walkthrough.
     verifyResult = undefined;
     verifyCheckError = error;
     console.error(`Could not verify against the mirror node: ${describeError(error)}`);
@@ -497,6 +510,53 @@ async function main(): Promise<void> {
       'This is "could not check" -- not "checked and did not match". The purchase and HCS ' +
         "anchor above already succeeded independently of this step.",
     );
+  }
+
+  // --- Ordering proof (A2/A3/A6/A7): independently confirm the decision's
+  // own HCS anchor, then confirm it reached consensus strictly before the
+  // payment settled -- checkable by a third party from the receipt (which
+  // now carries the full authorizingDecision) and public mirror-node data
+  // alone, with no trust in this script's own code sequencing required. ---
+  section("Ordering proof (A2/A3/A6/A7): decision anchored strictly before settlement");
+  let decisionVerifyResult: VerifyResult | undefined;
+  let orderingResult: OrderingProofResult | undefined;
+  let orderingCheckError: unknown;
+  if (bindError) {
+    console.log("Skipped: the receipt could not be bound to its decision (see Step 3 above).");
+  } else {
+    try {
+      decisionVerifyResult = await verifyWithRetry(approvalResult.decision, { topicId }, "decision");
+      console.log(`decision anchor outcome: ${decisionVerifyResult.outcome}`);
+      if (decisionVerifyResult.consensusTimestamp) {
+        console.log(`decision consensus timestamp: ${decisionVerifyResult.consensusTimestamp}`);
+      }
+      const referenceSequenceNumber = approvalResult.anchor.sequenceNumber;
+      const sequenceMatch = sequenceNumbersMatch(
+        decisionVerifyResult.sequenceNumber,
+        referenceSequenceNumber,
+      );
+      console.log(
+        `sequence number cross-check: mirror node reports ${decisionVerifyResult.sequenceNumber ?? "n/a"}, ` +
+          `receipt's decision reference claims ${referenceSequenceNumber ?? "n/a"} -- ` +
+          `${sequenceMatch ? "MATCH" : "no match"}`,
+      );
+
+      orderingResult = await verifyDecisionPrecedesSettlement(
+        decisionVerifyResult,
+        purchase.settlement.transactionId,
+      );
+      console.log(`ordering outcome: ${orderingResult.outcome}`);
+      if (orderingResult.decisionConsensusTimestamp) {
+        console.log(`decision consensus timestamp: ${orderingResult.decisionConsensusTimestamp}`);
+      }
+      if (orderingResult.settlementConsensusTimestamp) {
+        console.log(`settlement consensus timestamp: ${orderingResult.settlementConsensusTimestamp}`);
+      }
+    } catch (error) {
+      orderingCheckError = error;
+      console.error(`Could not complete the ordering proof: ${describeError(error)}`);
+      console.error('This is "could not check" -- not "checked and did not match".');
+    }
   }
 
   // --- Step 6: HashScan ---
@@ -522,18 +582,28 @@ async function main(): Promise<void> {
       "would misrepresent what was actually checked, so this step is cut rather than faked.",
   );
 
-  const coreSuccess = verifyResult?.outcome === "match";
+  const coreSuccess =
+    verifyResult?.outcome === "match" &&
+    decisionVerifyResult?.outcome === "match" &&
+    orderingResult?.outcome === "decision_before_settlement";
   console.log("");
   if (coreSuccess) {
-    console.log("RESULT: core proof (purchase, anchor, independent verification) succeeded.");
-  } else if (verifyCheckError) {
     console.log(
-      'RESULT: core proof\'s purchase and anchor succeeded, but independent verification ' +
-        'could NOT be checked (mirror node error) -- this is "could not check", not ' +
-        '"checked and did not match". See the error above.',
+      "RESULT: core proof (purchase, anchor, independent verification, and the decision-before-" +
+        "settlement ordering proof) succeeded.",
+    );
+  } else if (verifyCheckError || orderingCheckError) {
+    console.log(
+      'RESULT: core proof\'s purchase and anchor succeeded, but independent verification or the ' +
+        'ordering proof could NOT be fully checked (mirror node error) -- this is "could not ' +
+        'check", not "checked and did not match". See the errors above.',
     );
   } else {
-    console.log(`RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult?.outcome}").`);
+    console.log(
+      `RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult?.outcome}", ` +
+        `decision anchor outcome: "${decisionVerifyResult?.outcome ?? "not checked"}", ` +
+        `ordering outcome: "${orderingResult?.outcome ?? "not checked"}").`,
+    );
   }
   if (!coreSuccess) {
     process.exitCode = 1;
