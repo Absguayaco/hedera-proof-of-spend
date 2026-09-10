@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { AnchorResult } from "@proof-of-spend/anchor";
 import { canonicalize } from "@proof-of-spend/anchor";
-import type { BuyResult } from "@proof-of-spend/buyer";
+import type { BuyResult, HederaQuote } from "@proof-of-spend/buyer";
 import type { CheckBudget, Decision } from "./decide-and-buy.ts";
 import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
 
 const AGENT = "agent-demo";
 const RESOURCE = "http://localhost:8402/buy/espresso";
+const PAY_TO = "0.0.54321";
 
 const REQUEST = {
   agent: AGENT,
   resource: RESOURCE,
   operatorId: "0.0.99999",
-  // Opaque in every test below — never parsed by a real anchorReceipt/buyResource,
-  // both of which are replaced with fakes, so this does not need to be a real key.
+  // Opaque in every test below — never parsed by a real anchorReceipt/quote/settle,
+  // all of which are replaced with fakes, so this does not need to be a real key.
   operatorKey: "fake-operator-key",
 };
 
@@ -50,14 +51,34 @@ function fakeAnchor(result: AnchorResult, order: string[] = []) {
   return { impl, received, opts, order };
 }
 
-function fakeBuy(result: BuyResult | Error, order: string[] = []) {
+const QUOTE: HederaQuote = {
+  amountTinybar: "15000000",
+  payTo: PAY_TO,
+  // Opaque SDK plumbing — never read by decideAndBuy() itself, only passed
+  // through to settleQuoteImpl(), so these do not need to be real.
+  paymentRequired: {} as HederaQuote["paymentRequired"],
+  accepted: {} as HederaQuote["accepted"],
+};
+
+function fakeQuote(result: HederaQuote | Error, order: string[] = []) {
   const calls: unknown[] = [];
-  const impl = (async (request: unknown) => {
-    calls.push(request);
-    order.push("buy");
+  const impl = (async (url: string) => {
+    calls.push(url);
+    order.push("quote");
     if (result instanceof Error) throw result;
     return result;
   }) as Parameters<typeof decideAndBuy>[3];
+  return { impl, calls };
+}
+
+function fakeSettle(result: BuyResult | Error, order: string[] = []) {
+  const calls: unknown[] = [];
+  const impl = (async (url: string, quote: HederaQuote, operatorId: string, operatorKey: string) => {
+    calls.push({ url, quote, operatorId, operatorKey });
+    order.push("settle");
+    if (result instanceof Error) throw result;
+    return result;
+  }) as Parameters<typeof decideAndBuy>[4];
   return { impl, calls };
 }
 
@@ -77,9 +98,10 @@ const PURCHASE: BuyResult = {
 describe("decideAndBuy", () => {
   it("refuses to buy when the decision cannot be confirmed at HCS consensus", async () => {
     const anchor = fakeAnchor(FAILED_ANCHOR);
-    const buy = fakeBuy(PURCHASE);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
 
-    const result = await decideAndBuy(REQUEST, approve(), anchor.impl, buy.impl);
+    const result = await decideAndBuy(REQUEST, approve(), anchor.impl, quote.impl, settle.impl);
 
     expect(result.outcome).toBe("anchor_failed");
     expect(result.anchor).toEqual(FAILED_ANCHOR);
@@ -88,15 +110,16 @@ describe("decideAndBuy", () => {
       expect(result.message).toMatch(/mirror node unreachable/);
     }
     // A1: no payment settles unless the decision behind it is already anchored.
-    expect(buy.calls).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
   });
 
-  it("anchors a decline with the same call an approval would get, and buys nothing", async () => {
+  it("anchors a decline with the same call an approval would get, and buys nothing -- but still quotes the store, so the decline is anchored with a real amount and payee too", async () => {
     const order: string[] = [];
     const anchor = fakeAnchor(OK_ANCHOR, order);
-    const buy = fakeBuy(PURCHASE, order);
+    const quote = fakeQuote(QUOTE, order);
+    const settle = fakeSettle(PURCHASE, order);
 
-    const result = await decideAndBuy(REQUEST, decline("over the daily cap"), anchor.impl, buy.impl);
+    const result = await decideAndBuy(REQUEST, decline("over the daily cap"), anchor.impl, quote.impl, settle.impl);
 
     expect(result.outcome).toBe("declined");
     // E1: the decline really was anchored — same rigor as an approval, no
@@ -106,75 +129,103 @@ describe("decideAndBuy", () => {
     expect(result.decision.verdict).toBe("declined");
     expect(result.decision.reason).toBe("over the daily cap");
     expect(result.decision.budgetRuleId).toBe("daily-cap");
+    // B1: even a decline is anchored with the store's real amount and payee.
+    expect(result.decision.amount).toBe("15000000");
+    expect(result.decision.currency).toBe("HBAR");
+    expect(result.decision.payTo).toBe(PAY_TO);
     expect(anchor.received).toHaveLength(1);
     expect((anchor.received[0] as Decision).verdict).toBe("declined");
+    expect(quote.calls).toHaveLength(1);
     // E2: a decline settles nothing.
-    expect(buy.calls).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
   });
 
-  it("buys after an approved decision is genuinely anchored", async () => {
+  it("buys after an approved decision is genuinely anchored, settling against the SAME quote that was anchored", async () => {
     const order: string[] = [];
     const anchor = fakeAnchor(OK_ANCHOR, order);
-    const buy = fakeBuy(PURCHASE, order);
+    const quote = fakeQuote(QUOTE, order);
+    const settle = fakeSettle(PURCHASE, order);
     const budget = approve();
 
-    const result = await decideAndBuy(REQUEST, budget, anchor.impl, buy.impl);
+    const result = await decideAndBuy(REQUEST, budget, anchor.impl, quote.impl, settle.impl);
 
     expect(result.outcome).toBe("purchased");
     expect(result.anchor).toEqual(OK_ANCHOR);
     expect(result.decision.verdict).toBe("approved");
+    expect(result.decision.amount).toBe("15000000");
+    expect(result.decision.currency).toBe("HBAR");
+    expect(result.decision.payTo).toBe(PAY_TO);
     if (result.outcome === "purchased") {
       expect(result.purchase).toEqual(PURCHASE);
     }
-    expect(buy.calls).toHaveLength(1);
-    expect(buy.calls[0]).toEqual({
-      url: RESOURCE,
-      operatorId: REQUEST.operatorId,
-      operatorKey: REQUEST.operatorKey,
-    });
+    expect(settle.calls).toHaveLength(1);
+    const settleCall = settle.calls[0] as { url: string; quote: HederaQuote; operatorId: string; operatorKey: string };
+    expect(settleCall.url).toBe(RESOURCE);
+    expect(settleCall.quote).toBe(QUOTE); // the exact same quote object, not a re-fetched one
+    expect(settleCall.operatorId).toBe(REQUEST.operatorId);
+    expect(settleCall.operatorKey).toBe(REQUEST.operatorKey);
     // checkBudget is called with exactly {agent, resource} — nothing else
     // leaks in, and nothing it needs is dropped.
     expect(budget.calls).toHaveLength(1);
     expect(budget.calls[0]).toEqual({ agent: REQUEST.agent, resource: REQUEST.resource });
-    // Anchor-then-pay, not the other way around.
-    expect(order).toEqual(["anchor", "buy"]);
+    // Budget check, then quote, then anchor, then settle.
+    expect(order).toEqual(["quote", "anchor", "settle"]);
   });
 
   it("forwards request.topicId to the anchor call unchanged", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
-    const buy = fakeBuy(PURCHASE);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
     const requestWithTopic = { ...REQUEST, topicId: "0.0.55555" };
 
-    await decideAndBuy(requestWithTopic, approve(), anchor.impl, buy.impl);
+    await decideAndBuy(requestWithTopic, approve(), anchor.impl, quote.impl, settle.impl);
 
     expect(anchor.opts).toHaveLength(1);
     expect((anchor.opts[0] as { topicId?: string }).topicId).toBe("0.0.55555");
   });
 
+  it("defaults budgetRuleId to the sentinel \"none\" when no specific rule governed the decision (B1: never silently dropped from the hash)", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
+    const budgetWithNoRule = approve({ budgetRuleId: undefined });
+
+    const result = await decideAndBuy(REQUEST, budgetWithNoRule, anchor.impl, quote.impl, settle.impl);
+
+    expect(result.decision.budgetRuleId).toBe("none");
+    // Every value canonicalize() will see must be a string, never an
+    // omitted/undefined key doing double duty as "no rule" -- confirms the
+    // sentinel really is present in the hashed preimage.
+    expect(() => canonicalize(result.decision)).not.toThrow();
+    expect(canonicalize(result.decision)).toContain('"budgetRuleId":"none"');
+  });
+
   it("fails closed on a verdict it doesn't recognize, rather than buying", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
-    const buy = fakeBuy(PURCHASE);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
     // Simulates what a real, not-yet-written, unverified MCP adapter could
     // actually hand this function — cast past the type system on purpose,
     // since CheckBudget's own response is untrusted at runtime.
     const unrecognized: CheckBudget = async () =>
       ({ verdict: "needs_approval" }) as unknown as Awaited<ReturnType<CheckBudget>>;
 
-    const result = await decideAndBuy(REQUEST, unrecognized, anchor.impl, buy.impl);
+    const result = await decideAndBuy(REQUEST, unrecognized, anchor.impl, quote.impl, settle.impl);
 
     expect(result.outcome).toBe("declined");
-    expect(buy.calls).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
   });
 
-  it("guards the checkBudget call itself: a rejection is decorated and nothing is anchored or bought", async () => {
+  it("guards the checkBudget call itself: a rejection is decorated and nothing is quoted, anchored, or bought", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
-    const buy = fakeBuy(PURCHASE);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
     const budgetError = new Error("budget service timed out");
     const failingBudget: CheckBudget = async () => {
       throw budgetError;
     };
 
-    const attempt = decideAndBuy(REQUEST, failingBudget, anchor.impl, buy.impl);
+    const attempt = decideAndBuy(REQUEST, failingBudget, anchor.impl, quote.impl, settle.impl);
 
     await expect(attempt).rejects.toThrow(/Refusing to buy/);
     await expect(attempt).rejects.toThrow(/budget service timed out/);
@@ -182,16 +233,54 @@ describe("decideAndBuy", () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).cause).toBe(budgetError);
     });
+    expect(quote.calls).toHaveLength(0);
     expect(anchor.received).toHaveLength(0);
-    expect(buy.calls).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
+  });
+
+  it("guards the quote call itself: a rejection is decorated and nothing is anchored or bought", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const quoteError = new Error("store unreachable");
+    const quote = fakeQuote(quoteError);
+    const settle = fakeSettle(PURCHASE);
+
+    const attempt = decideAndBuy(REQUEST, approve(), anchor.impl, quote.impl, settle.impl);
+
+    await expect(attempt).rejects.toThrow(/Refusing to buy/);
+    await expect(attempt).rejects.toThrow(/store unreachable/);
+    await attempt.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toBe(quoteError);
+    });
+    expect(anchor.received).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
+  });
+
+  it("words the quote-failure message differently for a decline than an approval, since a decline was never going to buy anything", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const quoteError = new Error("store unreachable");
+    const quote = fakeQuote(quoteError);
+    const settle = fakeSettle(PURCHASE);
+
+    const attempt = decideAndBuy(REQUEST, decline("over the daily cap"), anchor.impl, quote.impl, settle.impl);
+
+    await expect(attempt).rejects.toThrow(/Could not anchor this decline/);
+    await expect(attempt).rejects.toThrow(/store unreachable/);
+    await attempt.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toBe(quoteError);
+    });
+    expect(anchor.received).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
   });
 
   it("generates a fresh nonce and an ISO decidedAt timestamp on every call", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
-    const buy = fakeBuy(PURCHASE);
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(PURCHASE);
 
-    const first = await decideAndBuy(REQUEST, approve(), anchor.impl, buy.impl);
-    const second = await decideAndBuy(REQUEST, approve(), anchor.impl, buy.impl);
+    const first = await decideAndBuy(REQUEST, approve(), anchor.impl, quote.impl, settle.impl);
+    const second = await decideAndBuy(REQUEST, approve(), anchor.impl, quote.impl, settle.impl);
 
     expect(first.decision.nonce).not.toBe(second.decision.nonce);
     expect(() => new Date(first.decision.decidedAt).toISOString()).not.toThrow();
@@ -200,9 +289,10 @@ describe("decideAndBuy", () => {
 
   it("decorates a purchase failure with the already-anchored decision, and preserves the cause", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
-    const buy = fakeBuy(new Error("insufficient_funds"));
+    const quote = fakeQuote(QUOTE);
+    const settle = fakeSettle(new Error("insufficient_funds"));
 
-    const attempt = decideAndBuy(REQUEST, approve(), anchor.impl, buy.impl);
+    const attempt = decideAndBuy(REQUEST, approve(), anchor.impl, quote.impl, settle.impl);
 
     await expect(attempt).rejects.toThrow(/was anchored at consensus/);
     await expect(attempt).rejects.toThrow(/insufficient_funds/);
@@ -233,9 +323,6 @@ describe("linkReceiptToDecision", () => {
         sequenceNumber: "42",
       },
     });
-    // Every value canonicalize() will see must be a string -- confirms the
-    // linked receipt is still hashable under the hash-spec rule that
-    // rejects raw JS numbers (packages/anchor/src/hash.ts, rule 2).
     expect(() => canonicalize(linked)).not.toThrow();
   });
 
@@ -261,11 +348,17 @@ describe("decideAndBuy — B6 (nonce-replay enforcement, evaluated and closed by
       } satisfies AnchorResult;
     }) as Parameters<typeof decideAndBuy>[2];
 
-    const buyCalls: unknown[] = [];
-    const buyImpl = (async (request: unknown) => {
-      buyCalls.push(request);
-      return PURCHASE;
+    const quoteCalls: unknown[] = [];
+    const quoteImpl = (async (url: string) => {
+      quoteCalls.push(url);
+      return QUOTE;
     }) as Parameters<typeof decideAndBuy>[3];
+
+    const settleCalls: unknown[] = [];
+    const settleImpl = (async (url: string) => {
+      settleCalls.push(url);
+      return PURCHASE;
+    }) as Parameters<typeof decideAndBuy>[4];
 
     // Same REQUEST object, called twice concurrently. If decideAndBuy() held
     // any shared mutable state keyed by nonce, agent, or resource (a cache,
@@ -274,23 +367,18 @@ describe("decideAndBuy — B6 (nonce-replay enforcement, evaluated and closed by
     // suppression effect (one call short-circuiting instead of anchoring) or
     // an observable race on shared state. Neither happens, because each
     // call generates its own randomUUID() nonce and performs its own
-    // anchor-then-buy entirely inside one function invocation -- there is no
-    // persisted "decision" a second, later call could redeem.
+    // anchor-then-settle entirely inside one function invocation -- there is
+    // no persisted "decision" a second, later call could redeem.
     const [first, second] = await Promise.all([
-      decideAndBuy(REQUEST, approve(), anchorImpl, buyImpl),
-      decideAndBuy(REQUEST, approve(), anchorImpl, buyImpl),
+      decideAndBuy(REQUEST, approve(), anchorImpl, quoteImpl, settleImpl),
+      decideAndBuy(REQUEST, approve(), anchorImpl, quoteImpl, settleImpl),
     ]);
 
     expect(first.decision.nonce).not.toBe(second.decision.nonce);
     expect(first.outcome).toBe("purchased");
     expect(second.outcome).toBe("purchased");
-    // Two genuinely separate anchor calls, not one memoized/shared result
-    // reused for both.
     expect(anchorCalls).toHaveLength(2);
     expect((anchorCalls[0] as Decision).nonce).not.toBe((anchorCalls[1] as Decision).nonce);
-    // Two genuinely separate purchase attempts, not a second call
-    // short-circuited by a "this decision was already redeemed" check --
-    // exactly the persisted state B6 was evaluated to not need.
-    expect(buyCalls).toHaveLength(2);
+    expect(settleCalls).toHaveLength(2);
   });
 });

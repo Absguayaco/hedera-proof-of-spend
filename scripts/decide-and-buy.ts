@@ -29,18 +29,60 @@
  * get their own nonce, each genuinely anchor, and each genuinely attempt
  * their own purchase, with no shared state between them a replay could
  * exploit.
+ *
+ * Build Kit B1 (the anchored decision must name the money, not just the
+ * URL) is closed here too: `amount`, `currency`, and `payTo` on Decision
+ * are populated from the store's own live x402 payment-required challenge
+ * at decision time (via @proof-of-spend/buyer's quoteResource()), and the
+ * SAME quote is what settleQuote() is later paid against -- never a second,
+ * independently-fetched one. See Decision's own field-level doc comments
+ * for why.
  */
 import { randomUUID } from "node:crypto";
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import type { AnchorResult } from "@proof-of-spend/anchor";
-import { buyResource } from "@proof-of-spend/buyer";
-import type { BuyResult } from "@proof-of-spend/buyer";
+import { quoteResource, settleQuote } from "@proof-of-spend/buyer";
+import type { BuyResult, HederaQuote } from "@proof-of-spend/buyer";
 
 export interface Decision {
   readonly agent: string;
   readonly resource: string;
   readonly verdict: "approved" | "declined";
-  readonly budgetRuleId?: string;
+  /** Tinybar amount the store's own LIVE 402 challenge quoted for this
+   *  resource at decision time, as a decimal string — not a cached menu
+   *  price. This is what closes Build Kit B1: the anchored authorization
+   *  now names an exact amount, not just a URL. Populated for a declined
+   *  decision too, with the same rigor as an approval (see this file's E1
+   *  note on decideAndBuy() below) -- a decline is anchored against the
+   *  same live quote it would have paid, had it been approved.
+   *
+   *  Precondition this adds: since even a decline now fetches the store's
+   *  challenge, a decline can no longer be anchored while the store is
+   *  unreachable (decideAndBuy() refuses to anchor anything without a real
+   *  amount/payee to attach to it, rather than fabricate one) -- chosen
+   *  deliberately over anchoring a decision with an unknown amount. */
+  readonly amount: string;
+  /** Fixed: packages/buyer settles exactly one asset, native HBAR — this is
+   *  a label, not a live-derived value, because there is nothing else it
+   *  could be while that remains true. */
+  readonly currency: "HBAR";
+  /** Hedera account id the payment settles to, per the same live quote. */
+  readonly payTo: string;
+  /** "none" when the budget checker reported no governing rule id — ALWAYS
+   *  present, so that absence is itself part of what's anchored, rather
+   *  than silently dropped from the hash. This project's hash-spec rule 5
+   *  (packages/anchor/src/hash.ts) omits any key whose value is undefined
+   *  before hashing -- an optional budgetRuleId would let "no rule id was
+   *  reported" vanish from the preimage without a trace.
+   *
+   *  Read "none" as "the checker didn't report a rule id," not as "no rule
+   *  governed this": scripts/check-budget-live.ts's real adapter only
+   *  populates budgetRuleId on its "refuse" branch, never on "allow" --
+   *  so an APPROVAL anchors "none" here even when an enforcing budget rule
+   *  genuinely allowed it. This is a limitation of that adapter, not of
+   *  this field; a future adapter change to report matched[0].ruleId on
+   *  "allow" too would make "none" mean what it visually suggests. */
+  readonly budgetRuleId: string;
   readonly reason?: string;
   readonly nonce: string;
   readonly decidedAt: string; // ISO 8601
@@ -89,7 +131,8 @@ export async function decideAndBuy(
   request: DecideAndBuyRequest,
   checkBudget: CheckBudget,
   anchorReceiptImpl: typeof anchorReceipt = anchorReceipt,
-  buyResourceImpl: typeof buyResource = buyResource,
+  quoteResourceImpl: typeof quoteResource = quoteResource,
+  settleQuoteImpl: typeof settleQuote = settleQuote,
 ): Promise<DecideAndBuyResult> {
   let budget: BudgetCheckResponse;
   try {
@@ -103,11 +146,41 @@ export async function decideAndBuy(
     );
   }
 
+  // B1: the money the decision authorizes comes from the store's own LIVE
+  // quote, fetched here -- BEFORE the decision is built or anchored -- not
+  // from anything cached or assumed. Fetched for a decline too (E1: same
+  // rigor, no special-casing) so every anchored decision, whatever its
+  // verdict, names a real amount and payee.
+  let quote: HederaQuote;
+  try {
+    quote = await quoteResourceImpl(request.resource);
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    // Worded differently for a decline than an approval: a decline was
+    // never going to buy anything, so "refusing to buy" would be a strange
+    // way to describe why its own decline couldn't be anchored. Both
+    // branches agree on the substance: no decision was anchored, because
+    // there is no real amount/payee to attach to it.
+    throw new Error(
+      budget.verdict === "approved"
+        ? `Refusing to buy: could not determine the amount and payee for ${request.resource} ` +
+            `from the store's own payment challenge, so no decision was anchored and nothing ` +
+            `was bought: ${cause}`
+        : `Could not anchor this decline: the store's payment challenge for ` +
+            `${request.resource} could not be fetched, so the decision -- already declined by ` +
+            `the budget check -- could not be anchored with a real amount and payee: ${cause}`,
+      { cause: error },
+    );
+  }
+
   const decision: Decision = {
     agent: request.agent,
     resource: request.resource,
     verdict: budget.verdict,
-    budgetRuleId: budget.budgetRuleId,
+    amount: quote.amountTinybar,
+    currency: "HBAR",
+    payTo: quote.payTo,
+    budgetRuleId: budget.budgetRuleId ?? "none",
     reason: budget.reason,
     // Fresh on every call -- see this file's top doc comment ("Build Kit
     // B6") for why that alone is enough to close the nonce-replay concern
@@ -148,16 +221,20 @@ export async function decideAndBuy(
   }
 
   try {
-    const purchase = await buyResourceImpl({
-      url: request.resource,
-      operatorId: request.operatorId,
-      operatorKey: request.operatorKey,
-    });
+    // Settled against the SAME quote that was just anchored -- never a
+    // second, independently-fetched one -- so the anchored amount/payTo and
+    // the amount/payee actually paid can never disagree.
+    const purchase = await settleQuoteImpl(
+      request.resource,
+      quote,
+      request.operatorId,
+      request.operatorKey,
+    );
     return { outcome: "purchased", decision, anchor, purchase };
   } catch (error) {
     // The decision was genuinely anchored at consensus by this point — this
     // is a real payment failure, not a budget decline, so it is not folded
-    // into DecideAndBuyResult next to "declined". buyResource()'s own throw
+    // into DecideAndBuyResult next to "declined". settleQuote()'s own throw
     // contract is preserved for this caller too, just decorated with the
     // context that anchoring already succeeded.
     throw new Error(
