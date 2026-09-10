@@ -10,7 +10,18 @@
  * live, against real testnet infrastructure: a real check_budget call, a
  * real x402 payment in HBAR, a real receipt, a real HCS anchor, a real
  * independent re-verification against a public mirror node, and real
- * HashScan links. Steps 1-2 are one decideAndBuy() call under the hood (see
+ * HashScan links.
+ *
+ * The receipt filed in step 3 also carries the full Decision object that
+ * authorized the purchase (not just a hash reference to it), plus a
+ * structured {nonce, topicId, sequenceNumber} pointer back to that
+ * decision's own HCS anchor (Build Kit B2/B3). Between steps 5 and 6, this
+ * script independently re-verifies that decision's anchor and then checks
+ * that it reached HCS consensus strictly before the payment settled (Build
+ * Kit A2/A3/A6/A7) -- the same two checks a third party holding only the
+ * filed receipt and public mirror-node access could run themselves.
+ *
+ * Steps 1-2 are one decideAndBuy() call under the hood (see
  * scripts/decide-and-buy.ts's own doc comment) but are reported here as
  * two steps for narrative clarity, matching the README.
  *
@@ -39,12 +50,12 @@ export {};
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
 import type { BuyResult } from "@proof-of-spend/buyer";
-import { verify } from "@proof-of-spend/verifier";
-import type { VerifyResult } from "@proof-of-spend/verifier";
+import { verify, verifyDecisionPrecedesSettlement, sequenceNumbersMatch } from "@proof-of-spend/verifier";
+import type { OrderingProofResult, VerifyResult } from "@proof-of-spend/verifier";
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
-import { decideAndBuy } from "./decide-and-buy.ts";
-import type { BudgetCheckRequest, DecideAndBuyResult } from "./decide-and-buy.ts";
+import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
+import type { BudgetCheckRequest, Decision, DecideAndBuyResult } from "./decide-and-buy.ts";
 
 const TINYBAR_PER_HBAR = 100_000_000n;
 const MERCHANT = "hedera-proof-of-spend store";
@@ -174,6 +185,84 @@ export function buildReceipt(slug: string, purchase: BuyResult): Record<string, 
       validStartNanos: String(purchase.settlement.validStartNanos),
     },
   };
+}
+
+/**
+ * Composes this script's own buildReceipt() with decide-and-buy's
+ * linkReceiptToDecision() (B2/B3: a structured {nonce, topicId,
+ * sequenceNumber} pointer from receipt back to the decision that authorized
+ * it), and additionally embeds the FULL authorizing Decision object under
+ * `authorizingDecision` — not just that structural pointer.
+ *
+ * The pointer alone is not enough for a third party to independently verify
+ * the decision: it identifies a specific anchored HCS message, but a hash
+ * proves nothing without its preimage, and the topic itself carries only
+ * {v, h} by design (see packages/anchor/src/topic.ts's AnchorMessage doc
+ * comment: "only the hash leaves the system"). The receipt, unlike the
+ * topic, was always meant to be disclosed — so this is where that preimage
+ * is handed over: a third party holding only this receipt can hash
+ * `authorizingDecision`, confirm it via verify(authorizingDecision,
+ * {topicId}), and then run verifyDecisionPrecedesSettlement() themselves,
+ * without ever needing to ask this script's operator for anything.
+ *
+ * `anchor` takes only the two optional fields it needs (not a whole
+ * AnchorResult) so this function stays trivially testable. topicId and
+ * sequenceNumber are required by DecisionReceiptRef but optional on
+ * AnchorResult itself (see linkReceiptToDecision()'s own doc comment on why
+ * TypeScript can't narrow that from a sibling `outcome` discriminant) — so
+ * this throws, naming the decision's nonce, rather than silently binding to
+ * a fabricated topic id or sequence number.
+ */
+export function bindReceiptToDecision(
+  receipt: Record<string, unknown>,
+  decision: Decision,
+  anchor: { topicId?: string; sequenceNumber?: string },
+): Record<string, unknown> {
+  if (!anchor.topicId || !anchor.sequenceNumber) {
+    throw new Error(
+      `Cannot bind receipt to decision ${decision.nonce}: its anchor is missing topicId or ` +
+        `sequenceNumber (topicId=${anchor.topicId ?? "unset"}, ` +
+        `sequenceNumber=${anchor.sequenceNumber ?? "unset"}).`,
+    );
+  }
+  const linked = linkReceiptToDecision(receipt, {
+    nonce: decision.nonce,
+    topicId: anchor.topicId,
+    sequenceNumber: anchor.sequenceNumber,
+  });
+  return { ...linked, authorizingDecision: decision };
+}
+
+const MIRROR_NODE_MAX_ATTEMPTS = 6;
+const MIRROR_NODE_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Wraps verify() with this script's bounded-retry pattern for mirror-node
+ * ingestion lag (HCS consensus and the mirror node's REST API are separate
+ * systems; this repo's own prior work measured a real ~8.68s gap between
+ * them). Shared by the receipt verify (step 5) and the decision verify (the
+ * ordering-proof section) so the retry shape lives in exactly one place
+ * instead of being duplicated per call site. `label` distinguishes the two
+ * in the retry log line only ("receipt" / "decision").
+ */
+export async function verifyWithRetry(
+  target: unknown,
+  opts: { topicId: string },
+  label: string,
+  verifyImpl: typeof verify = verify,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
+): Promise<VerifyResult> {
+  let result = await verifyImpl(target, opts);
+  let attempt = 1;
+  while (result.outcome === "missing" && attempt < MIRROR_NODE_MAX_ATTEMPTS) {
+    attempt += 1;
+    console.log(
+      `${label}: not yet visible on the mirror node, retrying (${attempt}/${MIRROR_NODE_MAX_ATTEMPTS})...`,
+    );
+    await sleepImpl(MIRROR_NODE_RETRY_DELAY_MS);
+    result = await verifyImpl(target, opts);
+  }
+  return result;
 }
 
 function requireEnv(name: string, message?: string): string {
@@ -364,9 +453,23 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- Step 3: file the receipt ---
+  // --- Step 3: file the receipt, bound to the decision that authorized it ---
   section('Step 3: file the settled purchase as a receipt on rail "hedera"');
-  const receipt = buildReceipt(APPROVAL_SLUG, purchase);
+  const baseReceipt = buildReceipt(APPROVAL_SLUG, purchase);
+  let receipt: Record<string, unknown> = baseReceipt;
+  let bindError: unknown;
+  try {
+    receipt = bindReceiptToDecision(baseReceipt, approvalResult.decision, {
+      topicId: approvalResult.anchor.topicId,
+      sequenceNumber: approvalResult.anchor.sequenceNumber,
+    });
+  } catch (error) {
+    bindError = error;
+    console.error(`Could not bind the receipt to its authorizing decision: ${describeError(error)}`);
+    console.error(
+      "Continuing with an unbound receipt -- the ordering proof (A2/A3/A6/A7) below will be skipped.",
+    );
+  }
   console.log(JSON.stringify(receipt, null, 2));
 
   // --- Step 4: anchor the receipt hash to HCS ---
@@ -383,25 +486,13 @@ async function main(): Promise<void> {
   // HCS consensus (step 4) and the public mirror node's REST API are
   // separate systems: the mirror node ingests messages *after* consensus,
   // with real-world lag (this repo's own prior work measured an ~8.68s gap
-  // on a real transaction). A single, immediate verify() call would
-  // intermittently report "missing" on a run that actually succeeded, so
-  // this polls for up to ~30s before treating "missing" as genuine.
+  // on a real transaction). verifyWithRetry() polls for up to ~30s before
+  // treating "missing" as genuine.
   section("Step 5: the verifier re-hashes the receipt independently and checks the topic");
-  const MIRROR_NODE_MAX_ATTEMPTS = 6;
-  const MIRROR_NODE_RETRY_DELAY_MS = 5_000;
   let verifyResult: VerifyResult | undefined;
   let verifyCheckError: unknown;
   try {
-    verifyResult = await verify(receipt, { topicId });
-    let attempt = 1;
-    while (verifyResult.outcome === "missing" && attempt < MIRROR_NODE_MAX_ATTEMPTS) {
-      attempt += 1;
-      console.log(
-        `not yet visible on the mirror node, retrying (${attempt}/${MIRROR_NODE_MAX_ATTEMPTS})...`,
-      );
-      await sleep(MIRROR_NODE_RETRY_DELAY_MS);
-      verifyResult = await verify(receipt, { topicId });
-    }
+    verifyResult = await verifyWithRetry(receipt, { topicId }, "receipt");
     console.log(`outcome: ${verifyResult.outcome}`);
     console.log(`computed hash: ${verifyResult.computedHash}`);
     if (verifyResult.consensusTimestamp) {
@@ -411,7 +502,7 @@ async function main(): Promise<void> {
     // The purchase (step 2) and HCS anchor (step 4) already genuinely
     // succeeded by this point -- a mirror-node failure here is "could not
     // check", not "checked and did not match", and must not read as either
-    // a verification mismatch or take down steps 6-7 and the final summary.
+    // a verification mismatch or take down the rest of the walkthrough.
     verifyResult = undefined;
     verifyCheckError = error;
     console.error(`Could not verify against the mirror node: ${describeError(error)}`);
@@ -419,6 +510,53 @@ async function main(): Promise<void> {
       'This is "could not check" -- not "checked and did not match". The purchase and HCS ' +
         "anchor above already succeeded independently of this step.",
     );
+  }
+
+  // --- Ordering proof (A2/A3/A6/A7): independently confirm the decision's
+  // own HCS anchor, then confirm it reached consensus strictly before the
+  // payment settled -- checkable by a third party from the receipt (which
+  // now carries the full authorizingDecision) and public mirror-node data
+  // alone, with no trust in this script's own code sequencing required. ---
+  section("Ordering proof (A2/A3/A6/A7): decision anchored strictly before settlement");
+  let decisionVerifyResult: VerifyResult | undefined;
+  let orderingResult: OrderingProofResult | undefined;
+  let orderingCheckError: unknown;
+  let sequenceMatch: boolean | undefined;
+  if (bindError) {
+    console.log("Skipped: the receipt could not be bound to its decision (see Step 3 above).");
+  } else {
+    try {
+      decisionVerifyResult = await verifyWithRetry(approvalResult.decision, { topicId }, "decision");
+      console.log(`decision anchor outcome: ${decisionVerifyResult.outcome}`);
+      if (decisionVerifyResult.consensusTimestamp) {
+        console.log(`decision consensus timestamp: ${decisionVerifyResult.consensusTimestamp}`);
+      }
+      const referenceSequenceNumber = approvalResult.anchor.sequenceNumber;
+      sequenceMatch = sequenceNumbersMatch(decisionVerifyResult.sequenceNumber, referenceSequenceNumber);
+      console.log(
+        `sequence number cross-check: mirror node reports ${decisionVerifyResult.sequenceNumber ?? "n/a"}, ` +
+          `receipt's decision reference claims ${referenceSequenceNumber ?? "n/a"} -- ` +
+          `${sequenceMatch ? "MATCH" : "no match"}`,
+      );
+
+      orderingResult = await verifyDecisionPrecedesSettlement(
+        decisionVerifyResult,
+        purchase.settlement.transactionId,
+      );
+      console.log(`ordering outcome: ${orderingResult.outcome}`);
+      if (orderingResult.decisionConsensusTimestamp) {
+        console.log(
+          `ordering proof's decision consensus timestamp: ${orderingResult.decisionConsensusTimestamp}`,
+        );
+      }
+      if (orderingResult.settlementConsensusTimestamp) {
+        console.log(`settlement consensus timestamp: ${orderingResult.settlementConsensusTimestamp}`);
+      }
+    } catch (error) {
+      orderingCheckError = error;
+      console.error(`Could not complete the ordering proof: ${describeError(error)}`);
+      console.error('This is "could not check" -- not "checked and did not match".');
+    }
   }
 
   // --- Step 6: HashScan ---
@@ -444,18 +582,69 @@ async function main(): Promise<void> {
       "would misrepresent what was actually checked, so this step is cut rather than faked.",
   );
 
-  const coreSuccess = verifyResult?.outcome === "match";
+  // Three independent checks now feed this summary (receipt verify, decision
+  // verify, ordering proof). Each can land in one of three buckets: it
+  // genuinely CONFIRMED the claim, it genuinely CONTRADICTED the claim (a
+  // negative that matters and must never be hidden behind an unrelated
+  // "could not check" elsewhere), or it could not be completed at all
+  // (mirror-node error, or -- for the ordering proof's settlement lookup
+  // specifically -- its own retry budget exhausted without ever finding the
+  // settlement transaction, the same "ingestion lag, not evidence" reasoning
+  // Step 5 already applies to receipt verification). A completed negative
+  // always outranks bindError and "could not check", so a real contradiction
+  // can never get reported as a shrug.
+  const receiptMatch = verifyResult?.outcome === "match";
+  const decisionMatch = decisionVerifyResult?.outcome === "match";
+  const orderingBeforeSettlement = orderingResult?.outcome === "decision_before_settlement";
+  const orderingInconclusive = orderingResult?.outcome === "settlement_not_found";
+  const orderingContradicted =
+    orderingResult !== undefined && !orderingBeforeSettlement && !orderingInconclusive;
+
+  const coreSuccess = receiptMatch && decisionMatch && sequenceMatch === true && orderingBeforeSettlement;
+
+  const checkedNegative =
+    (verifyResult !== undefined && !receiptMatch) ||
+    (decisionVerifyResult !== undefined && !decisionMatch) ||
+    sequenceMatch === false ||
+    orderingContradicted;
+
+  const couldNotCheck =
+    verifyCheckError !== undefined || orderingCheckError !== undefined || orderingInconclusive;
+
   console.log("");
   if (coreSuccess) {
-    console.log("RESULT: core proof (purchase, anchor, independent verification) succeeded.");
-  } else if (verifyCheckError) {
     console.log(
-      'RESULT: core proof\'s purchase and anchor succeeded, but independent verification ' +
-        'could NOT be checked (mirror node error) -- this is "could not check", not ' +
-        '"checked and did not match". See the error above.',
+      "RESULT: core proof (purchase, anchor, independent verification, and the decision-before-" +
+        "settlement ordering proof) succeeded.",
+    );
+  } else if (checkedNegative) {
+    console.log(
+      'RESULT: core proof did NOT hold -- this is "checked and did not match", not "could not ' +
+        `check" (receipt: "${verifyResult?.outcome ?? "not checked"}", decision: ` +
+        `"${decisionVerifyResult?.outcome ?? "not checked"}", sequence number cross-check: ` +
+        `${sequenceMatch === false ? "no match" : sequenceMatch === true ? "match" : "not checked"}, ` +
+        `ordering: "${orderingResult?.outcome ?? "not checked"}"). See the output above for which ` +
+        "check failed.",
+    );
+  } else if (bindError) {
+    console.log(
+      "RESULT: core proof's purchase and anchor succeeded, but the receipt could not be bound to " +
+        "its authorizing decision (see Step 3 above), so the decision verify and ordering proof " +
+        `did not run. Receipt verification alone: "${verifyResult?.outcome ?? "not checked"}".`,
+    );
+  } else if (couldNotCheck) {
+    console.log(
+      'RESULT: core proof\'s purchase and anchor succeeded, but independent verification or the ' +
+        "ordering proof could NOT be fully checked (mirror node error, or the settlement lookup's " +
+        'own retry budget was exhausted) -- this is "could not check", not "checked and did not ' +
+        'match". See the errors/outcomes above.',
     );
   } else {
-    console.log(`RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult?.outcome}").`);
+    console.log(
+      `RESULT: core proof did NOT fully succeed (verifier outcome: "${verifyResult?.outcome}", ` +
+        `decision anchor outcome: "${decisionVerifyResult?.outcome ?? "not checked"}", ` +
+        `ordering outcome: "${orderingResult?.outcome ?? "not checked"}").`,
+    );
   }
   if (!coreSuccess) {
     process.exitCode = 1;

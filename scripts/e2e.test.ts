@@ -1,13 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  bindReceiptToDecision,
   buildDescribePurchase,
   buildReceipt,
   fetchMenu,
   slugFromResource,
   tinybarToNominalUsd,
+  verifyWithRetry,
 } from "./e2e.ts";
 import type { MenuItemPrice } from "./e2e.ts";
+import { hashReceipt } from "@proof-of-spend/anchor";
 import type { BuyResult } from "@proof-of-spend/buyer";
+import type { Decision } from "./decide-and-buy.ts";
+import type { VerifyResult } from "@proof-of-spend/verifier";
 
 describe("tinybarToNominalUsd", () => {
   it("prices the menu's three real amounts at the nominal 1 HBAR = $1.00 rate", () => {
@@ -115,5 +120,142 @@ describe("buildReceipt", () => {
         validStartNanos: "123456789",
       },
     });
+  });
+});
+
+describe("bindReceiptToDecision", () => {
+  const DECISION: Decision = {
+    agent: "hedera-proof-of-spend-e2e-agent",
+    resource: "https://store.example/buy/espresso",
+    verdict: "approved",
+    budgetRuleId: "rule-1",
+    nonce: "11111111-1111-1111-1111-111111111111",
+    decidedAt: "2026-09-10T00:00:00.000Z",
+  };
+
+  it("attaches both the structured {nonce,topicId,sequenceNumber} reference (B2/B3) and the full Decision object (authorizingDecision) a third party needs to independently re-verify it", () => {
+    const receipt = { rail: "hedera", amountTinybar: "15000000" };
+
+    const bound = bindReceiptToDecision(receipt, DECISION, {
+      topicId: "0.0.777",
+      sequenceNumber: "42",
+    });
+
+    expect(bound).toEqual({
+      rail: "hedera",
+      amountTinybar: "15000000",
+      decision: { nonce: DECISION.nonce, topicId: "0.0.777", sequenceNumber: "42" },
+      authorizingDecision: DECISION,
+    });
+  });
+
+  it("does not mutate the original receipt object", () => {
+    const receipt = { rail: "hedera" };
+
+    bindReceiptToDecision(receipt, DECISION, { topicId: "0.0.777", sequenceNumber: "1" });
+
+    expect(receipt).toEqual({ rail: "hedera" });
+  });
+
+  it("throws naming the decision's nonce when the anchor's topicId is missing, rather than binding to a fabricated topic", () => {
+    expect(() =>
+      bindReceiptToDecision({ rail: "hedera" }, DECISION, {
+        topicId: undefined,
+        sequenceNumber: "1",
+      }),
+    ).toThrow(new RegExp(DECISION.nonce));
+  });
+
+  it("throws naming the decision's nonce when the anchor's sequenceNumber is missing", () => {
+    expect(() =>
+      bindReceiptToDecision({ rail: "hedera" }, DECISION, {
+        topicId: "0.0.777",
+        sequenceNumber: undefined,
+      }),
+    ).toThrow(new RegExp(DECISION.nonce));
+  });
+
+  it("keeps authorizingDecision hashable identically to the original Decision, even when optional fields are present as undefined-valued keys (decideAndBuy()'s real shape when askReceipts returns no rule) and get dropped by a JSON round-trip", () => {
+    const decisionWithUndefinedOptionals: Decision = {
+      agent: "hedera-proof-of-spend-e2e-agent",
+      resource: "https://store.example/buy/espresso",
+      verdict: "approved",
+      budgetRuleId: undefined,
+      reason: undefined,
+      nonce: "22222222-2222-2222-2222-222222222222",
+      decidedAt: "2026-09-10T00:00:00.000Z",
+    };
+
+    const bound = bindReceiptToDecision({ rail: "hedera" }, decisionWithUndefinedOptionals, {
+      topicId: "0.0.777",
+      sequenceNumber: "1",
+    });
+
+    // authorizingDecision only ever reaches a third party after a JSON
+    // round-trip (it's printed as JSON in step 3, and anchored/rehashed as
+    // JSON): confirms hashReceipt() drops undefined-valued keys identically
+    // on both sides, so the hash a third party recomputes from the receipt
+    // still matches the one this script actually anchored.
+    const roundTripped: unknown = JSON.parse(JSON.stringify(bound.authorizingDecision));
+    expect(hashReceipt(decisionWithUndefinedOptionals)).toBe(hashReceipt(roundTripped));
+  });
+});
+
+describe("verifyWithRetry", () => {
+  function matchResult(): VerifyResult {
+    return {
+      outcome: "match",
+      computedHash: "a".repeat(64),
+      consensusTimestamp: "1788825896.100000000",
+      sequenceNumber: 1,
+      hashscanUrl: "https://hashscan.io/testnet/topic/0.0.777/messages",
+    };
+  }
+
+  it("returns immediately on a first-attempt match, without sleeping", async () => {
+    const verifyImpl = vi.fn(async () => matchResult());
+    const sleepImpl = vi.fn(async () => {});
+
+    const result = await verifyWithRetry({}, { topicId: "0.0.777" }, "receipt", verifyImpl, sleepImpl);
+
+    expect(result.outcome).toBe("match");
+    expect(verifyImpl).toHaveBeenCalledTimes(1);
+    expect(sleepImpl).not.toHaveBeenCalled();
+  });
+
+  it("retries on a 'missing' outcome (mirror-node ingestion lag), succeeding once it appears", async () => {
+    let call = 0;
+    const verifyImpl = vi.fn(async () => {
+      call += 1;
+      return call < 3 ? { outcome: "missing" as const, computedHash: "a".repeat(64) } : matchResult();
+    });
+    const sleepImpl = vi.fn(async () => {});
+
+    const result = await verifyWithRetry({}, { topicId: "0.0.777" }, "receipt", verifyImpl, sleepImpl);
+
+    expect(result.outcome).toBe("match");
+    expect(verifyImpl).toHaveBeenCalledTimes(3);
+    expect(sleepImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after 6 attempts, returning the last 'missing' result rather than retrying forever", async () => {
+    const verifyImpl = vi.fn(async () => ({ outcome: "missing" as const, computedHash: "a".repeat(64) }));
+    const sleepImpl = vi.fn(async () => {});
+
+    const result = await verifyWithRetry({}, { topicId: "0.0.777" }, "receipt", verifyImpl, sleepImpl);
+
+    expect(result.outcome).toBe("missing");
+    expect(verifyImpl).toHaveBeenCalledTimes(6);
+    expect(sleepImpl).toHaveBeenCalledTimes(5);
+  });
+
+  it("propagates a thrown error from verifyImpl rather than swallowing it as a retry", async () => {
+    const verifyImpl = vi.fn(async () => {
+      throw new Error("mirror node unreachable");
+    });
+
+    await expect(
+      verifyWithRetry({}, { topicId: "0.0.777" }, "receipt", verifyImpl, async () => {}),
+    ).rejects.toThrow(/mirror node unreachable/);
   });
 });
