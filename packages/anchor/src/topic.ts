@@ -2,7 +2,7 @@
  * HCS topic lifecycle. One topic holds every anchor for a demo account.
  */
 import { TopicCreateTransaction, TopicMessageSubmitTransaction } from "@hiero-ledger/sdk";
-import type { Client } from "@hiero-ledger/sdk";
+import type { Client, PublicKey } from "@hiero-ledger/sdk";
 import { HASH_VERSION } from "./hash.ts";
 
 /** The message written to the topic. Only the hash leaves the system — no
@@ -33,9 +33,20 @@ export function encodeAnchorMessage(hash: string): string {
   return JSON.stringify(message);
 }
 
-export async function createTopic(client: Client): Promise<string> {
+/**
+ * Creates a topic with its submit key set to `submitKey` -- once set, HCS
+ * itself rejects any TopicMessageSubmitTransaction not signed by that key,
+ * before it ever reaches consensus. Without this, ANY Hedera account can
+ * write to the topic, and a third party's verify() can never tell "this
+ * hash was published by the agent claiming it" from "this hash was
+ * published by anyone" -- confirmed live against this project's own
+ * pre-existing topic (0.0.10424108): its real mirror-node record shows
+ * "submit_key":null.
+ */
+export async function createTopic(client: Client, submitKey: PublicKey): Promise<string> {
   const response = await new TopicCreateTransaction()
     .setTopicMemo("hedera-proof-of-spend anchor")
+    .setSubmitKey(submitKey)
     .execute(client);
   // execute() only reports the pre-check passed; getReceipt() is what
   // observes real consensus failure (same reasoning as @x402/hedera's
@@ -71,4 +82,65 @@ export async function submitHash(
     );
   }
   return { sequenceNumber: receipt.topicSequenceNumber.toString() };
+}
+
+// Confirmed live (this plan): the same testnet mirror-node base URL
+// packages/verifier uses. packages/anchor is already testnet-only
+// (Client.forTestnet(), hardcoded), so this is hardcoded too -- no network
+// parameter, for the same reason.
+const MIRROR_NODE_URL = "https://testnet.mirrornode.hedera.com";
+
+/** The one field this needs from GET /api/v1/topics/{id} -- confirmed live
+ *  against a real topic: {"submit_key": null, ...} when unset, or
+ *  {"submit_key": {"_type": "ECDSA_SECP256K1"|"ED25519", "key": "<hex>"},
+ *  ...} when set (confirmed live against a real account's key field, same
+ *  shape). `key` is lowercase hex with no "0x" prefix -- confirmed to match
+ *  PublicKey.toStringRaw()'s own output format exactly. */
+interface MirrorTopicInfo {
+  readonly submit_key: { readonly _type: string; readonly key: string } | null;
+}
+
+/**
+ * Refuses to proceed unless `topicId`'s own submit key genuinely belongs to
+ * `operatorPublicKey` -- this is what makes reusing a caller-supplied topic
+ * id (rather than creating a fresh one every time) safe. Called by
+ * anchorReceipt() only when a topicId is supplied (never for a topic this
+ * same call just created, which is trivially self-owned).
+ *
+ * Loud failure, in the same spirit as this repo's assertTestnet() and
+ * preflightFacilitator(): a topic with no submit key, or one whose submit
+ * key belongs to someone else, means an anchor written there would not
+ * actually prove this agent wrote it -- silently proceeding would be
+ * exactly the gap this function exists to close.
+ */
+export async function assertTopicOwnership(
+  topicId: string,
+  operatorPublicKey: PublicKey,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetchImpl(`${MIRROR_NODE_URL}/api/v1/topics/${topicId}`);
+  if (!response.ok) {
+    throw new Error(
+      `Refusing to anchor to topic ${topicId}: could not confirm ownership -- the mirror node ` +
+        `returned ${response.status} for its topic info. Check the topic id.`,
+    );
+  }
+  const info = (await response.json()) as Partial<MirrorTopicInfo>;
+  const submitKey = info.submit_key;
+  if (!submitKey) {
+    throw new Error(
+      `Refusing to anchor to topic ${topicId}: it has no submit key, so anyone could have ` +
+        `written to it -- an anchor there would not prove this agent wrote it. Omit ` +
+        `HCS_TOPIC_ID to create a fresh, properly-owned topic instead.`,
+    );
+  }
+  const expected = operatorPublicKey.toStringRaw().toLowerCase();
+  const actual = submitKey.key?.toLowerCase();
+  if (actual !== expected) {
+    throw new Error(
+      `Refusing to anchor to topic ${topicId}: its submit key does not match this operator's ` +
+        `key, so this agent does not control it -- an anchor there would not prove this agent ` +
+        `wrote it.`,
+    );
+  }
 }
