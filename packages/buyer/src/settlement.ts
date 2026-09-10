@@ -53,7 +53,28 @@ export function parseSettlement(raw: string): HederaSettlement {
  * (dashes, word "transaction"). Built from the already-parsed fields, not by
  * string-replacing dots in transactionId, which would also mangle the dots
  * inside the shard.realm.num fee-payer account id.
+ *
+ * `validStartNanos` is a fixed-width 9-digit field of the transaction id
+ * (see TX_ID above), but `HederaSettlement` stores it as a `number` --
+ * `Number("003987758")` is the correct value `3987758`, but re-embedding
+ * that number directly into the URL silently drops its significant leading
+ * zeros, producing a shorter, WRONG dash-separated id that 404s on HashScan.
+ * Re-padded to 9 digits here, right before it re-enters a string context,
+ * rather than changing `validStartNanos`'s type: this is the one place a
+ * dropped leading zero produces a broken, unusable URL. `scripts/e2e.ts`'s
+ * receipt-building has the same underlying loss (it also re-stringifies
+ * this field, unpadded) -- deliberately left alone here, out of scope for
+ * this fix, and lower-priority than this URL: the receipt's own
+ * `transactionId` field still carries the correctly-spelled original, so
+ * the anchored evidence stays internally reconstructable even though one of
+ * its display fields is inexact, which this URL had no such fallback for.
+ * Roughly one real transaction in ten has a nanos component starting with
+ * "0", so this was silently wrong often enough to matter, not a rare edge
+ * case -- confirmed against a real testnet transaction:
+ * 0.0.7162784@1788825896.003987758 must produce
+ * .../0.0.7162784-1788825896-003987758, not .../0.0.7162784-1788825896-3987758.
  */
 export function hashscanUrl(settlement: HederaSettlement): string {
-  return `https://hashscan.io/testnet/transaction/${settlement.feePayer}-${settlement.validStartSeconds}-${settlement.validStartNanos}`;
+  const nanos = String(settlement.validStartNanos).padStart(9, "0");
+  return `https://hashscan.io/testnet/transaction/${settlement.feePayer}-${settlement.validStartSeconds}-${nanos}`;
 }

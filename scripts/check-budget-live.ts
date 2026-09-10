@@ -132,17 +132,30 @@ function parseCheckBudgetResult(text: string): RealCheckBudgetResult {
  * tool's own description says to treat "error" as unknown, NOT approval.
  * This matches decideAndBuy()'s own fail-closed philosophy: anything that
  * isn't exactly "approved" is treated as a refusal, never the reverse.
+ *
+ * "allow" with `enforcing: 0` fails closed too, for the same reason: it
+ * means no budget rule was actually in a position to stop this purchase at
+ * any amount -- askReceipts' own check_budget contract is explicit that
+ * this is not a verified-within-budget confirmation and should not be
+ * reported as one ("enforcing: 0 means none of them can stop any purchase
+ * at any amount — nothing was checked, so say so rather than reporting the
+ * purchase as approved"). Reporting it as "approved" (even with a caveat
+ * `reason`) would mean a fresh or misconfigured askReceipts account grants
+ * unlimited spend by default, silently -- the one thing a preventive guard
+ * exists to not do. `decideAndBuy()` reads only `verdict`, never `reason`,
+ * to decide whether to buy, so the caveat text alone was never actually
+ * enforced by anything upstream of this function; only the verdict is.
  */
 function mapResult(result: RealCheckBudgetResult): BudgetCheckResponse {
   switch (result.decision) {
     case "allow": {
       if (result.enforcing === 0) {
         return {
-          verdict: "approved",
+          verdict: "declined",
           reason:
-            `askReceipts allowed this purchase, but no budget rule could actually enforce it ` +
-            `(considered: ${result.considered}, enforcing: ${result.enforcing}) — this is not ` +
-            `a verified-within-budget confirmation.`,
+            `askReceipts reported "allow", but no budget rule could actually enforce it ` +
+            `(considered: ${result.considered}, enforcing: ${result.enforcing}) — nothing was ` +
+            `checked, so this fails closed rather than reporting an unverified purchase as approved.`,
         };
       }
       return { verdict: "approved" };

@@ -112,7 +112,7 @@ describe("createLiveCheckBudget", () => {
     });
   });
 
-  it('maps decision "allow" with enforcing: 0 to an approval explaining nothing actually enforced it', async () => {
+  it('maps decision "allow" with enforcing: 0 to a decline, since nothing actually enforced it -- fails closed rather than granting unlimited spend by default', async () => {
     const { fetchImpl } = fakeAskReceipts({
       decision: "allow",
       considered: 0,
@@ -128,9 +128,41 @@ describe("createLiveCheckBudget", () => {
 
     const result = await checkBudget(REQUEST);
 
-    expect(result.verdict).toBe("approved");
+    expect(result.verdict).toBe("declined");
     expect(result.reason).toContain("no budget rule could actually enforce it");
     expect(result.reason).toContain("considered: 0, enforcing: 0");
+  });
+
+  it('maps decision "allow" with a rule that WAS considered but could not enforce (enforcing: 0 despite considered > 0) to a decline -- this exact payload was observed live against the real askReceipts server', async () => {
+    // Real, live-observed response (see
+    // docs/superpowers/plans/2026-09-09-live-check-budget.md): a rule exists
+    // and was considered, but couldn't enforce because a needed fact (here,
+    // spend category) isn't known until after the purchase. `enforcing`
+    // alone must drive the fail-closed branch -- not `considered === 0` --
+    // or this exact real-world shape would slip through as approved.
+    const { fetchImpl } = fakeAskReceipts({
+      decision: "allow",
+      considered: 1,
+      enforcing: 0,
+      matched: [],
+      notEvaluated: [
+        {
+          ruleId: "rule-restaurant-cap",
+          humanSummary: "cap restaurant spending at $100/month",
+          why: "category is assigned after the receipt is processed",
+        },
+      ],
+    });
+    const checkBudget = createLiveCheckBudget(
+      { url: MCP_URL, agentKey: AGENT_KEY },
+      describeEspresso,
+      fetchImpl,
+    );
+
+    const result = await checkBudget(REQUEST);
+
+    expect(result.verdict).toBe("declined");
+    expect(result.reason).toContain("considered: 1, enforcing: 0");
   });
 
   it('maps decision "refuse" with a matched rule to a decline carrying its ruleId and humanSummary', async () => {

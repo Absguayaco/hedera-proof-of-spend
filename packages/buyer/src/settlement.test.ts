@@ -46,4 +46,24 @@ describe("hashscanUrl", () => {
       "https://hashscan.io/testnet/transaction/0.0.12345-1699999999-123456789",
     );
   });
+
+  it("keeps validStartNanos' significant leading zeros, rather than dropping them via Number()", () => {
+    // Real testnet transaction, confirmed live: a naive Number()-then-
+    // interpolate would produce .../0.0.7162784-1788825896-3987758 (7
+    // digits, missing the two leading zeros) instead of the real 9-digit
+    // nanos component below -- a link that 404s on HashScan.
+    const settlement = parseSettlement("0.0.7162784@1788825896.003987758");
+    expect(settlement.validStartNanos).toBe(3987758); // the correct number
+    expect(hashscanUrl(settlement)).toBe(
+      "https://hashscan.io/testnet/transaction/0.0.7162784-1788825896-003987758",
+    );
+  });
+
+  it("pads an all-zero nanos component to the full 9 digits, the extreme case of the same bug", () => {
+    const settlement = parseSettlement("0.0.7162784@1788825896.000000000");
+    expect(settlement.validStartNanos).toBe(0);
+    expect(hashscanUrl(settlement)).toBe(
+      "https://hashscan.io/testnet/transaction/0.0.7162784-1788825896-000000000",
+    );
+  });
 });
