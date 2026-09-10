@@ -39,12 +39,12 @@ export {};
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
 import type { BuyResult } from "@proof-of-spend/buyer";
-import { verify } from "@proof-of-spend/verifier";
-import type { VerifyResult } from "@proof-of-spend/verifier";
+import { verify, verifyDecisionPrecedesSettlement, sequenceNumbersMatch } from "@proof-of-spend/verifier";
+import type { OrderingProofResult, VerifyResult } from "@proof-of-spend/verifier";
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
-import { decideAndBuy } from "./decide-and-buy.ts";
-import type { BudgetCheckRequest, DecideAndBuyResult } from "./decide-and-buy.ts";
+import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
+import type { BudgetCheckRequest, Decision, DecideAndBuyResult } from "./decide-and-buy.ts";
 
 const TINYBAR_PER_HBAR = 100_000_000n;
 const MERCHANT = "hedera-proof-of-spend store";
@@ -174,6 +174,84 @@ export function buildReceipt(slug: string, purchase: BuyResult): Record<string, 
       validStartNanos: String(purchase.settlement.validStartNanos),
     },
   };
+}
+
+/**
+ * Composes this script's own buildReceipt() with decide-and-buy's
+ * linkReceiptToDecision() (B2/B3: a structured {nonce, topicId,
+ * sequenceNumber} pointer from receipt back to the decision that authorized
+ * it), and additionally embeds the FULL authorizing Decision object under
+ * `authorizingDecision` — not just that structural pointer.
+ *
+ * The pointer alone is not enough for a third party to independently verify
+ * the decision: it identifies a specific anchored HCS message, but a hash
+ * proves nothing without its preimage, and the topic itself carries only
+ * {v, h} by design (see packages/anchor/src/topic.ts's AnchorMessage doc
+ * comment: "only the hash leaves the system"). The receipt, unlike the
+ * topic, was always meant to be disclosed — so this is where that preimage
+ * is handed over: a third party holding only this receipt can hash
+ * `authorizingDecision`, confirm it via verify(authorizingDecision,
+ * {topicId}), and then run verifyDecisionPrecedesSettlement() themselves,
+ * without ever needing to ask this script's operator for anything.
+ *
+ * `anchor` takes only the two optional fields it needs (not a whole
+ * AnchorResult) so this function stays trivially testable. topicId and
+ * sequenceNumber are required by DecisionReceiptRef but optional on
+ * AnchorResult itself (see linkReceiptToDecision()'s own doc comment on why
+ * TypeScript can't narrow that from a sibling `outcome` discriminant) — so
+ * this throws, naming the decision's nonce, rather than silently binding to
+ * a fabricated topic id or sequence number.
+ */
+export function bindReceiptToDecision(
+  receipt: Record<string, unknown>,
+  decision: Decision,
+  anchor: { topicId?: string; sequenceNumber?: string },
+): Record<string, unknown> {
+  if (!anchor.topicId || !anchor.sequenceNumber) {
+    throw new Error(
+      `Cannot bind receipt to decision ${decision.nonce}: its anchor is missing topicId or ` +
+        `sequenceNumber (topicId=${anchor.topicId ?? "unset"}, ` +
+        `sequenceNumber=${anchor.sequenceNumber ?? "unset"}).`,
+    );
+  }
+  const linked = linkReceiptToDecision(receipt, {
+    nonce: decision.nonce,
+    topicId: anchor.topicId,
+    sequenceNumber: anchor.sequenceNumber,
+  });
+  return { ...linked, authorizingDecision: decision };
+}
+
+const MIRROR_NODE_MAX_ATTEMPTS = 6;
+const MIRROR_NODE_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Wraps verify() with this script's bounded-retry pattern for mirror-node
+ * ingestion lag (HCS consensus and the mirror node's REST API are separate
+ * systems; this repo's own prior work measured a real ~8.68s gap between
+ * them). Shared by the receipt verify (step 5) and the decision verify (the
+ * ordering-proof section) so the retry shape lives in exactly one place
+ * instead of being duplicated per call site. `label` distinguishes the two
+ * in the retry log line only ("receipt" / "decision").
+ */
+export async function verifyWithRetry(
+  target: unknown,
+  opts: { topicId: string },
+  label: string,
+  verifyImpl: typeof verify = verify,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
+): Promise<VerifyResult> {
+  let result = await verifyImpl(target, opts);
+  let attempt = 1;
+  while (result.outcome === "missing" && attempt < MIRROR_NODE_MAX_ATTEMPTS) {
+    attempt += 1;
+    console.log(
+      `${label}: not yet visible on the mirror node, retrying (${attempt}/${MIRROR_NODE_MAX_ATTEMPTS})...`,
+    );
+    await sleepImpl(MIRROR_NODE_RETRY_DELAY_MS);
+    result = await verifyImpl(target, opts);
+  }
+  return result;
 }
 
 function requireEnv(name: string, message?: string): string {
