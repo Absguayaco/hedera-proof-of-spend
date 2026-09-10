@@ -256,6 +256,24 @@ describe("decideAndBuy", () => {
     expect(settle.calls).toHaveLength(0);
   });
 
+  it("words the quote-failure message differently for a decline than an approval, since a decline was never going to buy anything", async () => {
+    const anchor = fakeAnchor(OK_ANCHOR);
+    const quoteError = new Error("store unreachable");
+    const quote = fakeQuote(quoteError);
+    const settle = fakeSettle(PURCHASE);
+
+    const attempt = decideAndBuy(REQUEST, decline("over the daily cap"), anchor.impl, quote.impl, settle.impl);
+
+    await expect(attempt).rejects.toThrow(/Could not anchor this decline/);
+    await expect(attempt).rejects.toThrow(/store unreachable/);
+    await attempt.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toBe(quoteError);
+    });
+    expect(anchor.received).toHaveLength(0);
+    expect(settle.calls).toHaveLength(0);
+  });
+
   it("generates a fresh nonce and an ISO decidedAt timestamp on every call", async () => {
     const anchor = fakeAnchor(OK_ANCHOR);
     const quote = fakeQuote(QUOTE);

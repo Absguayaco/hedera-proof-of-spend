@@ -232,6 +232,28 @@ describe("settleQuote", () => {
     // not fetched again.
     expect(callCount).toBe(1);
   });
+
+  it("refuses a quote for a network other than hedera:testnet, even one built outside quoteResource()", async () => {
+    // Nothing in the type system stops a caller from handing settleQuote() a
+    // hand-built HederaQuote -- this confirms the network guard is
+    // re-asserted here too, not only inside quoteResource().
+    const quote = await quoteResource(URL, (async () =>
+      paymentRequiredResponse("hedera:testnet")) as typeof fetch);
+    const badQuote = {
+      ...quote,
+      accepted: { ...quote.accepted, network: "hedera:mainnet" as const },
+    };
+    let fetchCalled = false;
+    const fetchImpl = (async () => {
+      fetchCalled = true;
+      return settledResponse();
+    }) as typeof fetch;
+
+    await expect(
+      settleQuote(URL, badQuote, OPERATOR_ID, OPERATOR_KEY, fetchImpl),
+    ).rejects.toThrow(/Refusing to pay/);
+    expect(fetchCalled).toBe(false);
+  });
 });
 
 describe("buyResource (composition)", () => {

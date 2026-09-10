@@ -120,6 +120,13 @@ export async function settleQuote(
   operatorKey: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<BuyResult> {
+  // Re-asserted here, not just inside quoteResource(): nothing in the type
+  // system stops a caller from handing settleQuote() a hand-built or
+  // otherwise-sourced HederaQuote. Without this, a bad network would still
+  // be caught by the spend-control scoping below, but only with @x402/core's
+  // generic "no scheme registered" error -- exactly the un-actionable
+  // failure assertChallengeNetwork() exists to replace with a specific one.
+  assertChallengeNetwork(quote.accepted.network);
   const signer = createClientHederaSigner(operatorId, PrivateKey.fromString(operatorKey));
   // x402Client's default spend controls only allow the network's "default
   // asset" (USDC on hedera:testnet, per @x402/hedera's DEFAULT_ASSETS table)
@@ -188,7 +195,14 @@ export async function settleQuote(
   }
 
   const settlement = parseSettlement(settleResponse.transaction);
-  const amountTinybar = BigInt(quote.accepted.amount);
+  // Read from quote.amountTinybar -- the same field scripts/decide-and-buy.ts
+  // anchors into Decision.amount -- not quote.accepted.amount. Both are set
+  // from the same source inside quoteResource() and so agree today, but
+  // deriving BuyResult's reported amount from a DIFFERENT field of the same
+  // quote than the one that gets anchored would make that agreement
+  // incidental rather than structural -- exactly the distinction the
+  // anchored-vs-paid amount binding this package exists to support depends on.
+  const amountTinybar = BigInt(quote.amountTinybar);
   const body = await paid.json().catch((error: unknown) => {
     throw new Error(
       `store returned an unparseable body after a successful payment (status ${paid.status}, ` +

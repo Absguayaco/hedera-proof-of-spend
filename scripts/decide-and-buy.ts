@@ -54,7 +54,13 @@ export interface Decision {
    *  now names an exact amount, not just a URL. Populated for a declined
    *  decision too, with the same rigor as an approval (see this file's E1
    *  note on decideAndBuy() below) -- a decline is anchored against the
-   *  same live quote it would have paid, had it been approved. */
+   *  same live quote it would have paid, had it been approved.
+   *
+   *  Precondition this adds: since even a decline now fetches the store's
+   *  challenge, a decline can no longer be anchored while the store is
+   *  unreachable (decideAndBuy() refuses to anchor anything without a real
+   *  amount/payee to attach to it, rather than fabricate one) -- chosen
+   *  deliberately over anchoring a decision with an unknown amount. */
   readonly amount: string;
   /** Fixed: packages/buyer settles exactly one asset, native HBAR — this is
    *  a label, not a live-derived value, because there is nothing else it
@@ -62,13 +68,20 @@ export interface Decision {
   readonly currency: "HBAR";
   /** Hedera account id the payment settles to, per the same live quote. */
   readonly payTo: string;
-  /** "none" when no specific budget rule governed this decision (a blanket
-   *  allow, or an askReceipts account with enforcing:0) — ALWAYS present,
-   *  so the absence of a governing rule is itself part of what's anchored,
-   *  rather than silently dropped from the hash. This project's hash-spec
-   *  rule 5 (packages/anchor/src/hash.ts) omits any key whose value is
-   *  undefined before hashing -- an optional budgetRuleId would let "no
-   *  rule governed this" vanish from the preimage without a trace. */
+  /** "none" when the budget checker reported no governing rule id — ALWAYS
+   *  present, so that absence is itself part of what's anchored, rather
+   *  than silently dropped from the hash. This project's hash-spec rule 5
+   *  (packages/anchor/src/hash.ts) omits any key whose value is undefined
+   *  before hashing -- an optional budgetRuleId would let "no rule id was
+   *  reported" vanish from the preimage without a trace.
+   *
+   *  Read "none" as "the checker didn't report a rule id," not as "no rule
+   *  governed this": scripts/check-budget-live.ts's real adapter only
+   *  populates budgetRuleId on its "refuse" branch, never on "allow" --
+   *  so an APPROVAL anchors "none" here even when an enforcing budget rule
+   *  genuinely allowed it. This is a limitation of that adapter, not of
+   *  this field; a future adapter change to report matched[0].ruleId on
+   *  "allow" too would make "none" mean what it visually suggests. */
   readonly budgetRuleId: string;
   readonly reason?: string;
   readonly nonce: string;
@@ -142,10 +155,20 @@ export async function decideAndBuy(
   try {
     quote = await quoteResourceImpl(request.resource);
   } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    // Worded differently for a decline than an approval: a decline was
+    // never going to buy anything, so "refusing to buy" would be a strange
+    // way to describe why its own decline couldn't be anchored. Both
+    // branches agree on the substance: no decision was anchored, because
+    // there is no real amount/payee to attach to it.
     throw new Error(
-      `Refusing to buy: could not determine the amount and payee for ${request.resource} ` +
-        `from the store's own payment challenge, so no decision was anchored and nothing was ` +
-        `bought: ` + (error instanceof Error ? error.message : String(error)),
+      budget.verdict === "approved"
+        ? `Refusing to buy: could not determine the amount and payee for ${request.resource} ` +
+            `from the store's own payment challenge, so no decision was anchored and nothing ` +
+            `was bought: ${cause}`
+        : `Could not anchor this decline: the store's payment challenge for ` +
+            `${request.resource} could not be fetched, so the decision -- already declined by ` +
+            `the budget check -- could not be anchored with a real amount and payee: ${cause}`,
       { cause: error },
     );
   }
@@ -157,15 +180,18 @@ export async function decideAndBuy(
     amount: quote.amountTinybar,
     currency: "HBAR",
     payTo: quote.payTo,
-    // See this file's top doc comment ("Build Kit B6") for why a fresh
-    // nonce on every call is enough to close the nonce-replay concern
-    // without a separate replay-check.
     budgetRuleId: budget.budgetRuleId ?? "none",
     reason: budget.reason,
+    // Fresh on every call -- see this file's top doc comment ("Build Kit
+    // B6") for why that alone is enough to close the nonce-replay concern
+    // without a separate replay-check.
     nonce: randomUUID(),
     decidedAt: new Date().toISOString(),
   };
 
+  // The decision is anchored HERE, unconditionally, before its verdict is
+  // ever inspected — a decline goes through the identical call an approval
+  // would (E1: same rigor, no special-casing).
   const anchor = await anchorReceiptImpl(decision, {
     operatorId: request.operatorId,
     operatorKey: request.operatorKey,
@@ -173,6 +199,8 @@ export async function decideAndBuy(
   });
 
   if (!anchor.ok) {
+    // A1: no payment settles unless its decision is already at consensus —
+    // if we can't even confirm the anchor, we refuse to buy.
     return {
       outcome: "anchor_failed",
       decision,
@@ -185,6 +213,10 @@ export async function decideAndBuy(
   }
 
   if (decision.verdict !== "approved") {
+    // Inverted, not `=== "declined"`: checkBudget's response is untrusted
+    // (see CheckBudget's doc comment), so anything that isn't exactly
+    // "approved" is treated as a refusal — never the reverse. E2: a decline
+    // (or an unrecognized verdict) settles nothing.
     return { outcome: "declined", decision, anchor };
   }
 
@@ -200,6 +232,11 @@ export async function decideAndBuy(
     );
     return { outcome: "purchased", decision, anchor, purchase };
   } catch (error) {
+    // The decision was genuinely anchored at consensus by this point — this
+    // is a real payment failure, not a budget decline, so it is not folded
+    // into DecideAndBuyResult next to "declined". settleQuote()'s own throw
+    // contract is preserved for this caller too, just decorated with the
+    // context that anchoring already succeeded.
     throw new Error(
       `Decision ${decision.nonce} was anchored at consensus (hash ${anchor.hash}, ` +
         `topic ${anchor.topicId ?? "unknown"}) but the purchase failed: ` +
