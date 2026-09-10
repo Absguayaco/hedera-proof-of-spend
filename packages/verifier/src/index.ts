@@ -26,6 +26,9 @@ export interface VerifyResult {
   readonly computedHash: string;
   /** Consensus timestamp of the anchoring message, when one was found. */
   readonly consensusTimestamp?: string;
+  /** The anchoring message's position in the topic's own ordered log, read
+   *  straight from the mirror node. Present only on a "match". */
+  readonly sequenceNumber?: number;
   /** Link to the same message on HashScan, on a network neither party controls. */
   readonly hashscanUrl?: string;
 }
@@ -38,9 +41,27 @@ const MIRROR_NODE_URL: Record<string, string> = {
   mainnet: "https://mainnet-public.mirrornode.hedera.com",
 };
 
+/** Validates `network` and returns its mirror-node base URL. Shared by every
+ *  function in this file that reads from the mirror node -- verify() and
+ *  fetchSettlementConsensusTimestamp(). Object.hasOwn guards against
+ *  inherited Object.prototype members ("toString", "constructor",
+ *  "valueOf", ...) being read back as a truthy "known network" when
+ *  network comes straight from --network / env. */
+function mirrorBaseUrl(network: string): string {
+  if (!Object.hasOwn(MIRROR_NODE_URL, network)) {
+    throw new Error(`Unsupported network "${network}". Expected "testnet" or "mainnet".`);
+  }
+  return MIRROR_NODE_URL[network];
+}
+
 interface MirrorMessage {
   readonly message: string; // base64
   readonly consensus_timestamp: string;
+  /** The message's position in the topic's own ordered log. Confirmed live
+   *  against the real mirror node that this field is present on every entry
+   *  as a plain JSON number -- unlike the SDK-side
+   *  TransactionReceipt.topicSequenceNumber, which is a `Long`. */
+  readonly sequence_number: number;
 }
 
 interface MirrorMessagesPage {
@@ -55,13 +76,7 @@ export async function verify(
 ): Promise<VerifyResult> {
   const computedHash = hashReceipt(receipt);
   const network = opts.network ?? "testnet";
-  // Object.hasOwn guards against inherited Object.prototype members
-  // ("toString", "constructor", "valueOf", ...) being read back as a truthy
-  // "known network" when network comes straight from --network / env.
-  if (!Object.hasOwn(MIRROR_NODE_URL, network)) {
-    throw new Error(`Unsupported network "${network}". Expected "testnet" or "mainnet".`);
-  }
-  const base = MIRROR_NODE_URL[network];
+  const base = mirrorBaseUrl(network);
 
   let path: string | null = `/api/v1/topics/${opts.topicId}/messages?limit=100`;
   while (path) {
@@ -92,6 +107,7 @@ export async function verify(
             outcome: "match",
             computedHash,
             consensusTimestamp: entry.consensus_timestamp,
+            sequenceNumber: entry.sequence_number,
             hashscanUrl: `https://hashscan.io/${network}/topic/${opts.topicId}/messages`,
           };
         }

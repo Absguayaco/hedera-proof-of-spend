@@ -26,6 +26,7 @@ describe("verify", () => {
     expect(result.outcome).toBe("match");
     expect(result.computedHash).toBe(HASH);
     expect(result.consensusTimestamp).toBe("1700000000.000000001");
+    expect(result.sequenceNumber).toBe(1);
     expect(result.hashscanUrl).toBe("https://hashscan.io/testnet/topic/0.0.777/messages");
   });
 
