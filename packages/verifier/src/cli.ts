@@ -48,14 +48,27 @@ function parseArgs(argv: readonly string[], env: NodeJS.ProcessEnv): Args {
  * structured {nonce, topicId, sequenceNumber} reference
  * linkReceiptToDecision() embeds (see scripts/decide-and-buy.ts).
  *
- * Trusting a receipt-supplied topic id is safe only because
- * packages/anchor's anchorReceipt() now refuses to write to a topic it
- * doesn't own (see assertTopicOwnership()) -- before that, defaulting to
- * whatever a receipt claims would have let anyone point this at a topic
- * they control and self-verify. This function does not re-check
- * ownership itself: that already happened, once, on the anchor side, and
- * HCS's own consensus rules are what make every message on an owned topic
- * transitively trustworthy from here on (see this plan's Context section).
+ * WHAT THE RECEIPT-SUPPLIED FALLBACK DOES AND DOES NOT PROVE. Reusing a
+ * caller-supplied topic id is safe on the ANCHOR side, now that
+ * packages/anchor's anchorReceipt() refuses to write to a topic it doesn't
+ * own (see assertTopicOwnership()) -- an agent can no longer be made to
+ * anchor into a topic it doesn't control. But that does NOT mean a
+ * "match" against a topic id taken FROM THE RECEIPT proves the receipt
+ * came from any particular agent. Anyone can run createTopic() with THEIR
+ * OWN key, legitimately own the result, anchor a fabricated receipt's hash
+ * there, and hand you that receipt with its own decision.topicId pointing
+ * at their topic -- assertTopicOwnership() passes for them (it's genuinely
+ * their topic), resolveTopicId() reads their receipt's own claim, and
+ * verify() reports "match". A "match" reached this way proves only "this
+ * hash sits on SOME topic that SOMEONE owns" -- not "this agent anchored
+ * it". Proving the latter needs knowing, independently of the receipt
+ * itself, which topic id belongs to the agent being checked (e.g. an
+ * explicit --topic the caller already trusts) -- this repo does not yet
+ * publish that binding anywhere a third party could look it up, and this
+ * function makes no attempt to. Passing an explicit --topic you already
+ * know to be the agent's is the only way this tool's "match" carries that
+ * meaning; main() prints a caveat below whenever the topic id instead came
+ * from the receipt's own claim, for exactly this reason.
  *
  * No hardcoded default topic: a shared fallback is exactly the
  * world-writable-by-design shape this whole fix closes. If neither an
@@ -91,10 +104,17 @@ async function main(): Promise<void> {
   const receipt: unknown = JSON.parse(raw);
 
   const topicId = resolveTopicId(explicitTopicId, receipt);
-  console.log(
-    `topic: ${topicId}` +
-      (explicitTopicId ? "" : " (from the receipt's own decision.topicId reference)"),
-  );
+  if (explicitTopicId) {
+    console.log(`topic: ${topicId}`);
+  } else {
+    console.log(`topic: ${topicId} (from the receipt's own decision.topicId reference)`);
+    console.log(
+      "WARNING: this topic id came from the receipt itself, not from something you already " +
+        "knew to be this agent's topic. A \"match\" below proves the hash sits on a topic " +
+        "SOMEONE owns -- not that THIS agent anchored it. Pass --topic <the agent's known " +
+        "topic id> for a check that actually binds the result to a specific agent.",
+    );
+  }
 
   const result = await verify(receipt, { topicId, network });
 
