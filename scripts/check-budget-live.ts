@@ -21,12 +21,15 @@
  * decision is pushed to whoever wires this module up for real, via an
  * injected pure function: DescribePurchase. This mirrors this repo's other
  * injected collaborators (fetchImpl here and in packages/buyer,
- * anchorReceiptImpl/buyResourceImpl in decide-and-buy.ts) rather than
- * guessing.
+ * anchorReceiptImpl/quoteResourceImpl/settleQuoteImpl in decide-and-buy.ts)
+ * rather than guessing.
  *
- * This module is deliberately NOT wired into decideAndBuy()'s default
- * parameters or into scripts/e2e.ts — see scripts/decide-and-buy.ts's
- * CheckBudget doc comment. A human decides that wiring later.
+ * This module is deliberately NOT one of decideAndBuy()'s own default
+ * parameters — checkBudget has no default at all, precisely so a caller
+ * must supply a real implementation rather than accidentally getting a
+ * placeholder. scripts/e2e.ts is that real caller: it constructs
+ * createLiveCheckBudget() and passes the result to decideAndBuy() as its
+ * live checkBudget, has done so since the walkthrough was first wired up.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
