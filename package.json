@@ -17,10 +17,10 @@
     "build": "node scripts/build-vercel.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "e2e": "node scripts/e2e.ts",
-    "start:store": "node packages/store/src/index.ts",
-    "verify": "node packages/verifier/src/cli.ts",
-    "buy": "node packages/buyer/src/cli.ts"
+    "e2e": "node --env-file-if-exists=.env scripts/e2e.ts",
+    "start:store": "node --env-file-if-exists=.env packages/store/src/index.ts",
+    "verify": "node --env-file-if-exists=.env packages/verifier/src/cli.ts",
+    "buy": "node --env-file-if-exists=.env packages/buyer/src/cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0"
