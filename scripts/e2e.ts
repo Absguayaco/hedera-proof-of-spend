@@ -55,6 +55,7 @@ import type { OrderingProofResult, VerifyResult } from "@proof-of-spend/verifier
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
 import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
+import { saveReceiptLive } from "./save-receipt-live.ts";
 import type { BudgetCheckRequest, Decision, DecideAndBuyResult } from "./decide-and-buy.ts";
 
 const TINYBAR_PER_HBAR = 100_000_000n;
@@ -332,6 +333,7 @@ async function main(): Promise<void> {
   const menu = await fetchMenu(store);
   const describePurchase = buildDescribePurchase(menu);
   const checkBudget = createLiveCheckBudget({ url: ledger, agentKey }, describePurchase);
+  const saveReceipt = saveReceiptLive({ url: ledger, agentKey });
 
   // --- Steps 1-2: check_budget + buy, for a cheap item expected to approve ---
   section("Step 1: check_budget");
@@ -471,6 +473,34 @@ async function main(): Promise<void> {
     );
   }
   console.log(JSON.stringify(receipt, null, 2));
+
+  section("Filing the receipt to askReceipts");
+  try {
+    const purchaseDescription = describePurchase({ agent: AGENT_ID, resource: approvalResource });
+    await saveReceipt(
+      {
+        merchant: purchaseDescription.merchant ?? MERCHANT,
+        amount: purchaseDescription.amount,
+        currency: purchaseDescription.currency,
+        timestamp: new Date().toISOString(),
+        paymentIntentId: purchase.settlement.transactionId,
+        lineItems: [
+          {
+            description: purchaseDescription.description ?? APPROVAL_SLUG,
+            amount: purchaseDescription.amount,
+          },
+        ],
+      },
+      AGENT_ID,
+    );
+    console.log("filed to askReceipts: ok");
+  } catch (error) {
+    console.error(`Could not file receipt to askReceipts: ${describeError(error)}`);
+    console.error(
+      "Continuing -- this does not fail the run, but a later check_budget call will not see " +
+        "this purchase's spend without it.",
+    );
+  }
 
   // --- Step 4: anchor the receipt hash to HCS ---
   section("Step 4: hash the receipt and submit the hash to the HCS topic");
