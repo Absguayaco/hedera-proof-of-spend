@@ -3,10 +3,16 @@
 **An agent that spends money you can audit without trusting the auditor.**
 
 An AI agent buys from an x402-gated service on Hedera, settling in native HBAR.
-Every purchase is filed to a receipt ledger — and the agent anchors the hash of
-each receipt to a Hedera Consensus Service topic. Anyone can take a receipt,
-hash it themselves, and confirm the ledger never quietly changed its mind. The
-proof does not come from us.
+Before it pays, the spend *decision* — not just the receipt — is anchored to a
+Hedera Consensus Service topic that only this agent's key can write to, and
+the purchase does not settle unless that anchor reaches consensus first.
+Every purchase is then filed to a receipt ledger, and the agent anchors the
+hash of that receipt too. Anyone can take a receipt, hash it themselves, query
+Hedera's public mirror node — an unauthenticated REST API, no Hedera account,
+no SDK, `curl` is enough — and confirm two things independently: that the
+ledger never quietly changed its mind, and that the decision to spend
+genuinely predates the money moving. The proof does not come from us, and
+checking it does not require trusting us either.
 
 > **Testnet only.** This signs transactions from a private key you supply. It
 > refuses to start against any network but `hedera:testnet`. Use a throwaway
@@ -46,6 +52,26 @@ the package boundaries are what make them checkable rather than asserted:
 `packages/anchor/src/hash.ts` and `packages/verifier/src/hash.ts` are duplicates
 **on purpose**. Do not refactor one to import the other: the duplication is the
 control.
+
+## Prior work
+
+Disclosed upfront, not as an afterthought. Two pieces predate this event.
+
+**payment-rails-lab** was built for the NandaTown hackathon: a rail abstraction
+with two working rails (x402 and MPP), the buyer composition, a funding seam,
+the receipt contract, a spend cap, a budget guard and their tests. None of it is
+in this repository. This submission needs exactly one rail, so it has no rail
+interface, no registry and no funding seam — check `packages/buyer`, whose
+dependency list has only ever carried one rail.
+
+**askReceipts** is our own hosted receipt ledger, reached over an authenticated
+MCP endpoint. It is consumed as a service, not extended, and no part of it is
+modified here. Anchoring runs entirely agent-side: the agent files a receipt,
+reads it back, hashes it, and submits the hash to HCS. askReceipts never touches
+Hedera and does not know anchoring exists.
+
+Everything else in this repository is new, open source, and written during the
+event.
 
 ## Requirements
 
@@ -113,8 +139,12 @@ HCS — this is the buy step on its own, not the full walkthrough.
 
 ## Deploying the store
 
-The store runs on Vercel as a single function. `api/index.ts` is the entry
-point and `vercel.json` routes every path to it.
+The store runs on Vercel as a single function. `api/index.js` is the deployed
+entry point, built by `npm run build` from `packages/store/src/vercel.ts` via
+esbuild — the repo's own no-build-step rule stops at the boundary of this one
+deploy target; see [`docs/design.md`](docs/design.md) for why. `vercel.json`
+routes every path to it, and CI re-runs the build and fails if the committed
+`api/index.js` has drifted from its source.
 
 Serverless has no boot, so the guarantee the long-running server gets for free
 had to be rebuilt: the first request of each cold start runs the facilitator
@@ -139,12 +169,51 @@ Node 24 is required and Vercel selects it from `engines` in `package.json`.
 6. HashScan shows the same message, on a network neither of us controls.
 7. A final call returns spend across every rail — x402, MPP and Hedera in one answer.
 
-**Step 6 is the one that matters.** It is the only step whose evidence does not
-come from us.
+**Step 6 is the one that matters.** It is the only step whose evidence does
+not come from us.
+
+Between steps 5 and 6, the walkthrough also runs an independent **ordering
+proof**: it re-verifies the spend *decision*'s own HCS anchor — filed and
+confirmed at consensus before the purchase was ever attempted — looks up the
+real settlement transaction's consensus timestamp from the same public mirror
+node, and confirms the decision's timestamp is strictly earlier. That is what
+actually backs the claim that a purchase cannot settle on an unconfirmed
+decision: not a code-review argument, a timestamp comparison against a public
+ledger neither of us controls, runnable by anyone holding the filed receipt.
+
+The receipt itself carries what a third party needs for both checks: alongside
+the settled purchase, it embeds the full spend decision that authorized it —
+not just a hash reference to it — and a structured `{nonce, topicId,
+sequenceNumber}` pointer back to that decision's own anchor. Hand someone only
+the receipt file and they can independently hash the embedded decision,
+confirm it against the topic, and re-run the ordering check themselves,
+without ever asking us for anything.
 
 To run only the verification half, against a receipt you already hold:
 
     npm run verify -- --receipt ./receipt.json
+
+If you omit `--topic`/`HCS_TOPIC_ID`, this falls back to whatever topic the
+receipt itself names — printed with a warning, because that only proves the
+hash sits on a topic *someone* owns, not that a *specific* agent anchored it.
+Pass `--topic` with a topic id you already know to be this agent's for a check
+that actually binds the result to it.
+
+## Why the topic itself can be trusted
+
+Anyone can read an HCS topic. The question is whether anyone can *write* to
+one and make `verify()` say "match" for something this agent never anchored.
+
+`packages/anchor` sets a **submit key** on every topic it creates, scoped to
+the agent's own key — once set, Hedera's own consensus rules reject any
+submission not signed by that key, before it ever reaches consensus. Reusing
+an existing topic (via `HCS_TOPIC_ID`) goes through the same check every time:
+the agent queries the topic's own submit key from the public mirror node and
+refuses to anchor unless it genuinely matches, and refuses a topic that has an
+admin key at all — one could have its submit key changed or cleared later,
+which would retroactively undo the guarantee for everything already anchored
+there. A topic with no submit key, or one owned by a different key, is refused
+rather than silently written to.
 
 ## How the receipt hash is computed
 
@@ -214,13 +283,20 @@ canonicalizes to exactly:
 
     {"amount":"15000000","item":{"slug":"espresso"},"rail":"hedera"}
 
-and the hash is the SHA-256 of those bytes.
+and the hash is the SHA-256 of those bytes. `npm run e2e` produces a real one
+of these, plus the real topic id, sequence number, and HashScan links it
+anchors to — run it once and you have your own worked example with numbers
+that are actually yours, not ones lifted from this file.
 
 ## What this proves, and what it does not
 
 - **HCS proves integrity, not truth.** A ledger that files a wrong receipt and
   anchors it has anchored a wrong receipt, immutably. This narrows what you have
   to trust; it does not eliminate it.
+- **The anchored decision names the money.** `amount`, `currency` and `payTo`
+  come from the store's own live payment challenge at decision time, not a
+  cached price — so an anchored approval authorizes a specific amount to a
+  specific payee, not "this URL, for any amount, to any payee".
 - **The budget guard is advisory for `npm run buy`, and preventive for
   `decideAndBuy()`.** The customer runs the agent, so a direct call to
   `buyResource()` can be refused and used anyway — the ledger only records
@@ -229,31 +305,15 @@ and the hash is the SHA-256 of those bytes.
   unless that anchor reaches consensus with an approved verdict — a decline
   is anchored with the same rigor as an approval, not just recorded after
   the fact.
+- **The decision provably predates the payment.** See "Verify it yourself"
+  above — this is a timestamp comparison against the public mirror node, not
+  an assertion about code sequencing.
 - **Anchoring is best-effort.** If HCS is unreachable the purchase still
   completes and the receipt is still filed. An unanchored receipt is worth more
   than a lost one, and it is visibly unanchored — the correct failure mode.
 - **The topic alone tells you nothing.** Only hashes are published. That is a
   privacy choice, and its cost is that an anchor is meaningless without the
   receipt it fingerprints.
-
-## Prior work
-
-Two pieces predate this event and are disclosed as prior work.
-
-**payment-rails-lab** was built for the NandaTown hackathon: a rail abstraction
-with two working rails (x402 and MPP), the buyer composition, a funding seam,
-the receipt contract, a spend cap, a budget guard and their tests. None of it is
-in this repository. This submission needs exactly one rail, so it has no rail
-interface, no registry and no funding seam — check `packages/buyer`, whose
-dependency list has only ever carried one rail.
-
-**askReceipts** is our own hosted receipt ledger, reached over an authenticated
-MCP endpoint. It is consumed as a service, not extended, and no part of it is
-modified here. Anchoring runs entirely agent-side: the agent files a receipt,
-reads it back, hashes it, and submits the hash to HCS. askReceipts never touches
-Hedera and does not know anchoring exists.
-
-Everything in this repository is new, open source, and written during the event.
 
 ## Licence
 
