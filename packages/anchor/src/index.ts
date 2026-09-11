@@ -10,8 +10,9 @@
  * one, and it is visibly unanchored, which is the correct failure mode.
  */
 import { Client, PrivateKey } from "@hiero-ledger/sdk";
+import type { PublicKey } from "@hiero-ledger/sdk";
 import { hashReceipt } from "./hash.ts";
-import { createTopic, submitHash } from "./topic.ts";
+import { assertTopicOwnership, createTopic, submitHash } from "./topic.ts";
 import type { SubmitHashResult } from "./topic.ts";
 
 export interface AnchorResult {
@@ -33,8 +34,13 @@ export interface AnchorResult {
  *  boundary instead of HTTP. Client construction and key parsing stay real in
  *  both, matching how buyer's tests exercise real offline signing. */
 export interface HcsOps {
-  readonly createTopic: (client: Client) => Promise<string>;
+  readonly createTopic: (client: Client, submitKey: PublicKey) => Promise<string>;
   readonly submitHash: (client: Client, topicId: string, hash: string) => Promise<SubmitHashResult>;
+  /** Refuses (throws) unless `topicId`'s own submit key belongs to
+   *  `operatorPublicKey` -- see topic.ts's assertTopicOwnership() doc
+   *  comment. Called only when reusing a caller-supplied topicId; never for
+   *  a topic this same call just created. */
+  readonly assertTopicOwnership: (topicId: string, operatorPublicKey: PublicKey) => Promise<void>;
 }
 
 function describeError(error: unknown): string {
@@ -44,7 +50,7 @@ function describeError(error: unknown): string {
 export async function anchorReceipt(
   receipt: unknown,
   opts: { operatorId: string; operatorKey: string; topicId?: string },
-  hcs: HcsOps = { createTopic, submitHash },
+  hcs: HcsOps = { createTopic, submitHash, assertTopicOwnership },
 ): Promise<AnchorResult> {
   let hash: string;
   try {
@@ -86,7 +92,22 @@ export async function anchorReceipt(
     try {
       client = Client.forTestnet();
       client.setOperator(opts.operatorId, operatorKey);
-      const topicId = opts.topicId ?? (await hcs.createTopic(client));
+
+      // Reusing a caller-supplied topic requires proving this operator
+      // actually controls it FIRST -- an ownership failure here is caught
+      // by the outer catch below, which already reports back
+      // opts.topicId (the rejected topic), exactly as intended. A freshly
+      // created topic needs no such check: its submit key is set to this
+      // same operator's key in the same call, so it is self-owned by
+      // construction.
+      let topicId: string;
+      if (opts.topicId !== undefined) {
+        await hcs.assertTopicOwnership(opts.topicId, operatorKey.publicKey);
+        topicId = opts.topicId;
+      } else {
+        topicId = await hcs.createTopic(client, operatorKey.publicKey);
+      }
+
       try {
         const submitted = await hcs.submitHash(client, topicId, hash);
         return { ok: true, hash, topicId, sequenceNumber: submitted.sequenceNumber };
@@ -98,9 +119,10 @@ export async function anchorReceipt(
     } catch (error) {
       // Anchoring is best-effort: a failed anchor must never block a purchase.
       // The hash is still reported so the caller can retry or log it. If the
-      // caller supplied a topicId, echo it back — createTopic is what failed
-      // here, not the topic the caller already had. No topic id was newly
-      // obtained in that case.
+      // caller supplied a topicId, echo it back — createTopic (or the
+      // ownership check on a reused topic) is what failed here, not the
+      // topic the caller already had. No topic id was newly obtained in
+      // that case.
       return {
         ok: false,
         hash,
@@ -126,5 +148,5 @@ export async function anchorReceipt(
 }
 
 export { hashReceipt, canonicalize, HASH_VERSION } from "./hash.ts";
-export { createTopic, submitHash } from "./topic.ts";
+export { assertTopicOwnership, createTopic, submitHash } from "./topic.ts";
 export type { AnchorMessage, SubmitHashResult } from "./topic.ts";

@@ -1,4 +1,4 @@
-import type { Client } from "@hiero-ledger/sdk";
+import type { Client, PublicKey } from "@hiero-ledger/sdk";
 import { PrivateKey } from "@hiero-ledger/sdk";
 import { describe, expect, it } from "vitest";
 import { hashReceipt } from "./hash.ts";
@@ -11,13 +11,15 @@ const RECEIPT = { rail: "hedera", amount: "15000000" };
 
 function fakeHcs(
   overrides: Partial<{
-    createTopic: (client: Client) => Promise<string>;
+    createTopic: (client: Client, submitKey: PublicKey) => Promise<string>;
     submitHash: (client: Client, topicId: string, hash: string) => Promise<SubmitHashResult>;
+    assertTopicOwnership: (topicId: string, operatorPublicKey: PublicKey) => Promise<void>;
   }> = {},
 ) {
   return {
     createTopic: overrides.createTopic ?? (async () => "0.0.777"),
     submitHash: overrides.submitHash ?? (async () => ({ sequenceNumber: "1" })),
+    assertTopicOwnership: overrides.assertTopicOwnership ?? (async () => undefined),
   };
 }
 
@@ -59,12 +61,16 @@ describe("anchorReceipt", () => {
     expect(result.sequenceNumber).toBe("42");
   });
 
-  it("reuses a given topicId and never calls createTopic", async () => {
+  it("reuses a given topicId and never calls createTopic, but DOES verify ownership first", async () => {
     let createCalled = false;
+    const ownershipChecks: Array<{ topicId: string }> = [];
     const hcs = fakeHcs({
       createTopic: async () => {
         createCalled = true;
         return "0.0.999";
+      },
+      assertTopicOwnership: async (topicId) => {
+        ownershipChecks.push({ topicId });
       },
     });
 
@@ -78,6 +84,52 @@ describe("anchorReceipt", () => {
     expect(result.topicId).toBe("0.0.123");
     expect(result.sequenceNumber).toBe("1");
     expect(createCalled).toBe(false);
+    expect(ownershipChecks).toEqual([{ topicId: "0.0.123" }]);
+  });
+
+  it("never throws: an ownership-check failure on a reused topic becomes {ok:false, topicId, error}, and never submits", async () => {
+    let submitCalled = false;
+    const hcs = fakeHcs({
+      assertTopicOwnership: async () => {
+        throw new Error("its submit key does not match this operator's key");
+      },
+      submitHash: async () => {
+        submitCalled = true;
+        return { sequenceNumber: "1" };
+      },
+    });
+
+    const result = await anchorReceipt(
+      RECEIPT,
+      { operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY, topicId: "0.0.123" },
+      hcs,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      hash: hashReceipt(RECEIPT),
+      topicId: "0.0.123",
+      error: expect.stringMatching(/does not match this operator's key/),
+    });
+    expect(submitCalled).toBe(false);
+  });
+
+  it("does NOT verify ownership when creating a fresh topic -- a topic this same call just created is trivially self-owned", async () => {
+    let ownershipCheckCalled = false;
+    const hcs = fakeHcs({
+      assertTopicOwnership: async () => {
+        ownershipCheckCalled = true;
+      },
+    });
+
+    const result = await anchorReceipt(
+      RECEIPT,
+      { operatorId: OPERATOR_ID, operatorKey: OPERATOR_KEY },
+      hcs,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(ownershipCheckCalled).toBe(false);
   });
 
   it("never throws: a submit failure becomes {ok:false, error}, hash still reported", async () => {
