@@ -50,7 +50,7 @@ export {};
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
 import type { BuyResult } from "@proof-of-spend/buyer";
-import { verify, verifyDecisionPrecedesSettlement, sequenceNumbersMatch } from "@proof-of-spend/verifier";
+import { verify, verifyAtSequence, verifyDecisionPrecedesSettlement } from "@proof-of-spend/verifier";
 import type { OrderingProofResult, VerifyResult } from "@proof-of-spend/verifier";
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
@@ -526,18 +526,27 @@ async function main(): Promise<void> {
     console.log("Skipped: the receipt could not be bound to its decision (see Step 3 above).");
   } else {
     try {
-      decisionVerifyResult = await verifyWithRetry(approvalResult.decision, { topicId }, "decision");
+      // Position-based, not a scan: this looks up the exact message
+      // approvalResult.anchor.sequenceNumber claims, so a mismatch here is
+      // "altered" (something tampered with the decision or its reference),
+      // not merely "missing" -- see packages/verifier's verifyAtSequence()
+      // doc comment. This also makes the old separate sequence-number
+      // cross-check redundant: this call already fetches by that exact
+      // position, so the mirror node reporting it back proves nothing new.
+      if (!approvalResult.anchor.sequenceNumber) {
+        throw new Error(
+          "Decision anchor has no sequenceNumber -- cannot look up its exact position.",
+        );
+      }
+      decisionVerifyResult = await verifyAtSequence(approvalResult.decision, {
+        topicId,
+        sequenceNumber: approvalResult.anchor.sequenceNumber,
+      });
       console.log(`decision anchor outcome: ${decisionVerifyResult.outcome}`);
       if (decisionVerifyResult.consensusTimestamp) {
         console.log(`decision consensus timestamp: ${decisionVerifyResult.consensusTimestamp}`);
       }
-      const referenceSequenceNumber = approvalResult.anchor.sequenceNumber;
-      sequenceMatch = sequenceNumbersMatch(decisionVerifyResult.sequenceNumber, referenceSequenceNumber);
-      console.log(
-        `sequence number cross-check: mirror node reports ${decisionVerifyResult.sequenceNumber ?? "n/a"}, ` +
-          `receipt's decision reference claims ${referenceSequenceNumber ?? "n/a"} -- ` +
-          `${sequenceMatch ? "MATCH" : "no match"}`,
-      );
+      sequenceMatch = decisionVerifyResult.outcome === "match";
 
       orderingResult = await verifyDecisionPrecedesSettlement(
         decisionVerifyResult,
