@@ -6,7 +6,8 @@
  * one step in the walkthrough whose evidence does not come from us.
  */
 import { readFile } from "node:fs/promises";
-import { verify } from "./index.ts";
+import { verify, verifyAtSequence, verifyDecisionPrecedesSettlement } from "./index.ts";
+import type { OrderingProofResult, VerifyResult } from "./index.ts";
 
 interface Args {
   readonly receiptPath: string;
@@ -97,6 +98,51 @@ export function resolveTopicId(explicit: string | undefined, receipt: unknown): 
   );
 }
 
+/** What `main()` needs to run the ordering proof: the full authorizing
+ *  Decision (the preimage a third party needs to re-hash), the exact topic
+ *  position it was anchored at, and the settlement transaction id it must
+ *  precede. Returns undefined -- not a throw -- when the receipt doesn't
+ *  carry this shape: "cannot check ordering" is a legitimate, disclosed
+ *  outcome for an older or hand-authored receipt, not an error. */
+export interface DecisionReference {
+  readonly authorizingDecision: unknown;
+  readonly topicId: string;
+  readonly sequenceNumber: string;
+  readonly settlementTransactionId: string;
+}
+
+export function extractDecisionReference(receipt: unknown): DecisionReference | undefined {
+  if (receipt === null || typeof receipt !== "object") return undefined;
+  const r = receipt as Record<string, unknown>;
+
+  const decision = r.decision;
+  const settlement = r.settlement;
+  if (
+    !("authorizingDecision" in r) ||
+    decision === null ||
+    typeof decision !== "object" ||
+    typeof (decision as Record<string, unknown>).topicId !== "string" ||
+    typeof (decision as Record<string, unknown>).sequenceNumber !== "string" ||
+    settlement === null ||
+    typeof settlement !== "object" ||
+    typeof (settlement as Record<string, unknown>).transactionId !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    authorizingDecision: r.authorizingDecision,
+    topicId: (decision as Record<string, unknown>).topicId as string,
+    sequenceNumber: (decision as Record<string, unknown>).sequenceNumber as string,
+    settlementTransactionId: (settlement as Record<string, unknown>).transactionId as string,
+  };
+}
+
+function section(title: string): void {
+  console.log("");
+  console.log(`=== ${title} ===`);
+}
+
 async function main(): Promise<void> {
   const { receiptPath, topicId: explicitTopicId, network } = parseArgs(process.argv.slice(2), process.env);
 
@@ -104,26 +150,61 @@ async function main(): Promise<void> {
   const receipt: unknown = JSON.parse(raw);
 
   const topicId = resolveTopicId(explicitTopicId, receipt);
-  if (explicitTopicId) {
-    console.log(`topic: ${topicId}`);
-  } else {
-    console.log(`topic: ${topicId} (from the receipt's own decision.topicId reference)`);
-    console.log(
-      "WARNING: this topic id came from the receipt itself, not from something you already " +
-        "knew to be this agent's topic. A \"match\" below proves the hash sits on a topic " +
-        "SOMEONE owns -- not that THIS agent anchored it. Pass --topic <the agent's known " +
-        "topic id> for a check that actually binds the result to a specific agent.",
-    );
-  }
+  console.log(
+    `topic: ${topicId}` +
+      (explicitTopicId ? "" : " (from the receipt's own decision.topicId reference)"),
+  );
 
   const result = await verify(receipt, { topicId, network });
-
   console.log(`outcome: ${result.outcome}`);
   console.log(`computed hash: ${result.computedHash}`);
   if (result.consensusTimestamp) console.log(`consensus timestamp: ${result.consensusTimestamp}`);
   if (result.hashscanUrl) console.log(`hashscan: ${result.hashscanUrl}`);
 
-  if (result.outcome !== "match") {
+  // --- Ordering proof (A2/A3/A6/A7): the same check scripts/e2e.ts already
+  // proves live, run here against nothing but the receipt file and the
+  // public mirror node -- this is the one command a third party actually
+  // runs, so this is where the ordering claim has to hold. ---
+  section("Ordering proof (A2/A3/A6/A7)");
+  const reference = extractDecisionReference(receipt);
+  let decisionResult: VerifyResult | undefined;
+  let orderingResult: OrderingProofResult | undefined;
+
+  if (!reference) {
+    console.log(
+      "Not checked: this receipt does not carry a decision/settlement reference " +
+        "(authorizingDecision, decision.topicId/sequenceNumber, settlement.transactionId).",
+    );
+  } else {
+    decisionResult = await verifyAtSequence(
+      reference.authorizingDecision,
+      { topicId: reference.topicId, sequenceNumber: reference.sequenceNumber, network },
+    );
+    console.log(`decision anchor outcome: ${decisionResult.outcome}`);
+    if (decisionResult.consensusTimestamp) {
+      console.log(`decision consensus timestamp: ${decisionResult.consensusTimestamp}`);
+    }
+
+    orderingResult = await verifyDecisionPrecedesSettlement(
+      decisionResult,
+      reference.settlementTransactionId,
+      { network },
+    );
+    console.log(`ordering outcome: ${orderingResult.outcome}`);
+    if (orderingResult.decisionConsensusTimestamp) {
+      console.log(`decision consensus timestamp (ordering proof): ${orderingResult.decisionConsensusTimestamp}`);
+    }
+    if (orderingResult.settlementConsensusTimestamp) {
+      console.log(`settlement consensus timestamp: ${orderingResult.settlementConsensusTimestamp}`);
+    }
+  }
+
+  const coreSuccess =
+    result.outcome === "match" &&
+    (!reference ||
+      (decisionResult?.outcome === "match" && orderingResult?.outcome === "decision_before_settlement"));
+
+  if (!coreSuccess) {
     process.exitCode = 1;
   }
 }
