@@ -7,7 +7,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { verify, verifyAtSequence, verifyDecisionPrecedesSettlement } from "./index.ts";
-import type { OrderingProofResult, VerifyResult } from "./index.ts";
+import type { Outcome, OrderingProofResult, VerifyResult } from "./index.ts";
 
 interface Args {
   readonly receiptPath: string;
@@ -115,27 +115,58 @@ export function extractDecisionReference(receipt: unknown): DecisionReference | 
   if (receipt === null || typeof receipt !== "object") return undefined;
   const r = receipt as Record<string, unknown>;
 
-  const decision = r.decision;
-  const settlement = r.settlement;
-  if (
-    !("authorizingDecision" in r) ||
-    decision === null ||
-    typeof decision !== "object" ||
-    typeof (decision as Record<string, unknown>).topicId !== "string" ||
-    typeof (decision as Record<string, unknown>).sequenceNumber !== "string" ||
-    settlement === null ||
-    typeof settlement !== "object" ||
-    typeof (settlement as Record<string, unknown>).transactionId !== "string"
-  ) {
+  // authorizingDecision itself has no fixed shape here (it's re-hashed
+  // whole by verifyAtSequence(), which will correctly report "altered" for
+  // any value that doesn't match what was actually anchored) -- but it
+  // must genuinely be present and non-null, not merely an own key whose
+  // value happens to be undefined/null.
+  if (r.authorizingDecision === undefined || r.authorizingDecision === null) {
     return undefined;
   }
 
+  const decision = r.decision;
+  if (decision === null || typeof decision !== "object") return undefined;
+  const decisionRecord = decision as Record<string, unknown>;
+  const topicId = decisionRecord.topicId;
+  const sequenceNumber = decisionRecord.sequenceNumber;
+  if (typeof topicId !== "string" || typeof sequenceNumber !== "string") return undefined;
+
+  const settlement = r.settlement;
+  if (settlement === null || typeof settlement !== "object") return undefined;
+  const settlementTransactionId = (settlement as Record<string, unknown>).transactionId;
+  if (typeof settlementTransactionId !== "string") return undefined;
+
   return {
     authorizingDecision: r.authorizingDecision,
-    topicId: (decision as Record<string, unknown>).topicId as string,
-    sequenceNumber: (decision as Record<string, unknown>).sequenceNumber as string,
-    settlementTransactionId: (settlement as Record<string, unknown>).transactionId as string,
+    topicId,
+    sequenceNumber,
+    settlementTransactionId,
   };
+}
+
+/**
+ * The pass/fail contract this whole tool exists to enforce, pulled out as
+ * a pure function so it is directly testable without executing main()'s
+ * file I/O and network calls. Requires the receipt's own hash to match,
+ * AND -- only when the receipt actually carries an ordering reference --
+ * that the decision's own anchor matched AND that it genuinely preceded
+ * settlement. A receipt with no ordering reference at all still passes on
+ * hash alone (matching this repo's plan-mandated formula: "core proof
+ * succeeded, ordering not checked" is a legitimate, disclosed outcome, not
+ * a failure) -- but ANY of "altered", "missing", or a non-"decision_before_
+ * settlement" ordering outcome, once a reference IS present, is a failure.
+ */
+export function classifyRun(
+  receiptOutcome: Outcome,
+  hasReference: boolean,
+  decisionOutcome: Outcome | undefined,
+  orderingOutcome: OrderingProofResult["outcome"] | undefined,
+): boolean {
+  return (
+    receiptOutcome === "match" &&
+    (!hasReference ||
+      (decisionOutcome === "match" && orderingOutcome === "decision_before_settlement"))
+  );
 }
 
 function section(title: string): void {
@@ -150,10 +181,17 @@ async function main(): Promise<void> {
   const receipt: unknown = JSON.parse(raw);
 
   const topicId = resolveTopicId(explicitTopicId, receipt);
-  console.log(
-    `topic: ${topicId}` +
-      (explicitTopicId ? "" : " (from the receipt's own decision.topicId reference)"),
-  );
+  if (explicitTopicId) {
+    console.log(`topic: ${topicId}`);
+  } else {
+    console.log(`topic: ${topicId} (from the receipt's own decision.topicId reference)`);
+    console.log(
+      "WARNING: this topic id came from the receipt itself, not from something you already " +
+        'knew to be this agent\'s topic. A "match" below proves the hash sits on a topic ' +
+        'SOMEONE owns -- not that THIS agent anchored it. Pass --topic <the agent\'s known ' +
+        "topic id> for a check that actually binds the result to a specific agent.",
+    );
+  }
 
   const result = await verify(receipt, { topicId, network });
   console.log(`outcome: ${result.outcome}`);
@@ -176,10 +214,23 @@ async function main(): Promise<void> {
         "(authorizingDecision, decision.topicId/sequenceNumber, settlement.transactionId).",
     );
   } else {
-    decisionResult = await verifyAtSequence(
-      reference.authorizingDecision,
-      { topicId: reference.topicId, sequenceNumber: reference.sequenceNumber, network },
-    );
+    // Looked up on the SAME topic the hash was just checked against --
+    // topicId, not necessarily reference.topicId. If --topic was given
+    // specifically because the caller already trusts it as this agent's,
+    // the decision anchor must be checked there too, not wherever the
+    // receipt separately claims -- otherwise --topic would only bind half
+    // of what this command checks.
+    if (reference.topicId !== topicId) {
+      console.log(
+        `note: the receipt's own decision.topicId ("${reference.topicId}") differs from the ` +
+          `topic actually being checked ("${topicId}") -- looking up the decision at "${topicId}".`,
+      );
+    }
+    decisionResult = await verifyAtSequence(reference.authorizingDecision, {
+      topicId,
+      sequenceNumber: reference.sequenceNumber,
+      network,
+    });
     console.log(`decision anchor outcome: ${decisionResult.outcome}`);
     if (decisionResult.consensusTimestamp) {
       console.log(`decision consensus timestamp: ${decisionResult.consensusTimestamp}`);
@@ -199,17 +250,32 @@ async function main(): Promise<void> {
     }
   }
 
-  const coreSuccess =
-    result.outcome === "match" &&
-    (!reference ||
-      (decisionResult?.outcome === "match" && orderingResult?.outcome === "decision_before_settlement"));
+  const coreSuccess = classifyRun(
+    result.outcome,
+    reference !== undefined,
+    decisionResult?.outcome,
+    orderingResult?.outcome,
+  );
+
+  console.log("");
+  console.log(
+    coreSuccess
+      ? `VERIFIED${reference ? " -- hash matched, decision anchor matched, ordering holds." : " (hash matched; ordering not checked -- see above)."}`
+      : "NOT VERIFIED -- see outcomes above.",
+  );
 
   if (!coreSuccess) {
     process.exitCode = 1;
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run when this file is executed directly (`npm run verify`, or
+// `node packages/verifier/src/cli.ts`) -- not when imported, e.g. by this
+// file's own test suite. Same pattern as packages/store/src/index.ts's own
+// run-guard.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
