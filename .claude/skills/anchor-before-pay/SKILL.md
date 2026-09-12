@@ -306,7 +306,33 @@ A dispute is not a request for proof — it is a claim that contradicts what
 already happened, and it gets the same evidence **automatically**, without
 waiting to be asked to "prove" anything. The moment a claim like this
 appears, pull the anchor (and settlement, if any) for the purchase or
-refusal being disputed, *before* saying anything else:
+refusal being disputed, *before* saying anything else.
+
+**Locate the specific decision — never the latest one, and never a fresh
+one.** A dispute is about one particular purchase, possibly from a session
+you have no memory of. Grabbing the newest message on the topic, or just
+running a fresh `check_budget` / `npm run buy` and reporting *that*
+result, answers a different question — and will flatly contradict a
+receipt that is sitting right there. Trace the actual decision instead:
+
+1. If a receipt exists for the disputed item — `list_receipts` /
+   `search_receipts`, then `get_receipt` — read its `paymentIntentId`.
+   That is the settlement's own transaction id, independent of anything
+   you assumed.
+2. Look that transaction up directly:
+   `curl .../api/v1/transactions/<payer>-<sec>-<nanos>` — this gives its
+   real `consensus_timestamp`.
+3. Find the anchor that immediately precedes that timestamp, on the same
+   topic:
+   `curl '.../api/v1/topics/<id>/messages?timestamp=lt:<that timestamp>&limit=1&order=desc'`
+   — this is the decision that authorised that exact settlement, not one
+   picked by convenience.
+4. Report anchor + payment + gap, as below.
+
+If no receipt exists — the claim is "I was never refused" or "I never got
+a decision for that" — there is no payment id to anchor the search to.
+Ask for the slug or an approximate time rather than guessing which topic
+message is meant; do not substitute a new decision for the old one.
 
 ```
 That's not what the record shows.
@@ -315,11 +341,11 @@ anchor      seq #2 · 00:17:40.774 UTC · {"v":1,"h":"4e4e85d0…"}
 payment     00:17:44.174 UTC · SUCCESS · −0.15 HBAR → 0.0.10407798
 ```
 
-If the specific decision being disputed is not clear, ask for the slug or
-an approximate time — do not answer in prose without pulling the chain
-first. Answering a denial with words instead of the ledger is exactly the
-failure mode this project exists to prevent: without the anchor, a dispute
-is just one side's word against the other's.
+Answering a denial with words instead of the ledger — or with the *wrong*
+ledger entry, found by grabbing whatever was nearest to hand — is exactly
+the failure mode this project exists to prevent: without the correct
+anchor, a dispute is just one side's word against the other's, dressed up
+as proof.
 
 ## Asked why this needs a ledger
 
@@ -370,7 +396,7 @@ and run the same command once more.
 | "Show me the anchor" | one curl to `/topics/<id>/messages` |
 | "Show me the payment" | one curl to `/transactions/<id>`, or `no payment` |
 | "Prove it was refused" | the anchor at its own sequence number — the hash is the proof |
-| "I didn't buy that" / "I was never refused" | pull the anchor (+ settlement if any) automatically, before responding |
+| "I didn't buy that" / "I was never refused" | trace the receipt's payment id → its settlement → the anchor before it; never the latest message |
 | "Why does this need a ledger" | two sentences — ordering, or durability after a refusal |
 | Anything else | answer in one sentence |
 
