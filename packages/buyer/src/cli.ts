@@ -1,10 +1,13 @@
 /**
- * Standalone entry point: `npm run buy -- [slug]`
+ * Standalone entry point: `npm run buy:raw -- [slug]`
  *
  * Buys one item from the store by hand and prints what happened. No budget
- * check, no receipt filing, no anchoring — those belong to the larger e2e
- * walkthrough. This exists so a real purchase can be exercised and verified
- * on its own, against either the hosted store or a local one.
+ * check, no receipt filing, no anchoring — this is a rail-debugging tool
+ * for exercising the store and the x402 payment rail in isolation, not the
+ * authorised purchase path. `npm run buy` (scripts/buy.ts) is the gated
+ * command: it always anchors a decision to HCS, confirmed at consensus,
+ * before any payment settles. See
+ * .claude/skills/buying-from-this-store/SKILL.md.
  */
 import { assertTestnet, buyResource, hashscanUrl } from "./index.ts";
 
@@ -46,7 +49,7 @@ async function main(): Promise<void> {
 
   assertTestnet(process.env.HEDERA_NETWORK);
 
-  console.log("note: no budget check, no anchor -- use npm run e2e for the authorised, audited path.");
+  console.log("note: no budget check, no anchor -- use npm run buy (or npm run e2e) for the authorised, audited path.");
 
   const result = await buyResource({
     url: `${storeUrl()}/buy/${slug}`,
@@ -60,7 +63,13 @@ async function main(): Promise<void> {
   console.log(`hashscan: ${hashscanUrl(result.settlement)}`);
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run when this file is executed directly (`npm run buy:raw`, or
+// `node packages/buyer/src/cli.ts`) -- not when imported. Same pattern as
+// packages/store/src/index.ts and packages/verifier/src/cli.ts's own
+// run-guards.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

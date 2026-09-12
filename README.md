@@ -147,13 +147,19 @@ agent cannot find out what anything costs without paying first. Every
 
     HEDERA_OPERATOR_ID=0.0.<your account> \
     HEDERA_OPERATOR_KEY=<your private key> \
-    npm run buy -- espresso
+    npm run buy:raw -- espresso
 
 Buys one item — `espresso`, `flat-white`, or `cold-brew` — from the hosted
 store by default, pays the 402 challenge in HBAR, and prints what it paid,
 the transaction id, and a HashScan link. Set `STORE_URL` to buy from a
-locally-run store instead. No receipt is filed and nothing is anchored to
-HCS — this is the buy step on its own, not the full walkthrough.
+locally-run store instead. No budget check, no receipt filing, nothing
+anchored to HCS — this exercises the payment rail on its own, in isolation,
+for debugging it.
+
+`npm run buy` (no `:raw`) is the authorised path: it always anchors a
+decision to HCS, confirmed at consensus, before any payment settles — see
+`.claude/skills/buying-from-this-store/SKILL.md` for the full sequence and
+worked examples.
 
 ## Deploying the store
 
@@ -342,10 +348,11 @@ message, on a network neither of us controls.
   come from the store's own live payment challenge at decision time, not a
   cached price — so an anchored approval authorizes a specific amount to a
   specific payee, not "this URL, for any amount, to any payee".
-- **The budget guard is advisory for `npm run buy`, and preventive for
-  `decideAndBuy()`.** The customer runs the agent, so a direct call to
-  `buyResource()` can be refused and used anyway — the ledger only records
-  the refusal. `decideAndBuy()` (`scripts/decide-and-buy.ts`) is stricter: it
+- **The budget guard is advisory for `npm run buy:raw`, and preventive for
+  `npm run buy` / `decideAndBuy()`.** The customer runs the agent, so a
+  direct call to `buyResource()` can be refused and used anyway — the
+  ledger only records the refusal. `decideAndBuy()` (`scripts/decide-and-
+  buy.ts`, which `scripts/buy.ts` always goes through) is stricter: it
   anchors the spend decision to HCS *before* paying, and settles nothing
   unless that anchor reaches consensus with an approved verdict — a decline
   is anchored with the same rigor as an approval, not just recorded after
