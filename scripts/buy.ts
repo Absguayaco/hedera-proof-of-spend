@@ -35,10 +35,11 @@
  * here only if the filing attempt itself failed) -- incomplete, not
  * failed: the purchase and its anchor are both already real.
  */
+import type { AnchorResult } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import { decideAndBuy } from "./decide-and-buy.ts";
-import type { CheckBudget, Decision } from "./decide-and-buy.ts";
+import type { CheckBudget, DecideAndBuyResult, Decision } from "./decide-and-buy.ts";
 import {
   bindReceiptToDecision,
   buildDescribePurchase,
@@ -191,6 +192,87 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The `anchor` field exactly as SKILL.md fixes it: `topic <id> seq #<n> ·
+ * hash <first 16 chars>…`. Shared by the decline and purchase paths so the
+ * two cannot drift apart, and so the hash is truncated identically in both
+ * -- the skill asks for a 16-character prefix, which is what an operator
+ * compares against the mirror node by eye.
+ */
+export function anchorField(anchor: AnchorResult): string {
+  const topic = anchor.topicId ?? "unknown";
+  const seq = anchor.sequenceNumber === undefined ? "?" : `#${anchor.sequenceNumber}`;
+  return `topic ${topic} seq ${seq} · hash ${anchor.hash.slice(0, 16)}…`;
+}
+
+/**
+ * Everything in the report EXCEPT its last field: the headline, a blank
+ * line, then `budget`, `anchor` and `payment`. The `receipt` field is
+ * deliberately not here -- on a purchase it is not known until the filing
+ * attempt has finished, and these lines must be printable BEFORE that
+ * attempt so a filing that hangs or throws can never cost the operator
+ * sight of a transaction id for a payment that has already settled. See
+ * receiptField() for the last line, and main() for how the two are joined.
+ *
+ * Pure, and exported, so the format SKILL.md fixes ("one headline and all
+ * four fields ... Nothing may be left out") is enforced by buy.test.ts
+ * rather than merely written down in the doc.
+ */
+export function reportHead(slug: string, result: DecideAndBuyResult): readonly string[] {
+  if (result.outcome === "anchor_failed") {
+    return [
+      `${slug} not bought — the decision could not be confirmed at consensus`,
+      "",
+      `budget      ${result.decision.verdict} · rule ${result.decision.budgetRuleId}`,
+      `anchor      failed — ${result.message}`,
+      `payment     none — nothing moved`,
+    ];
+  }
+
+  if (result.outcome === "declined") {
+    return [
+      `${slug} refused — ${result.decision.reason ?? "the budget declined it"}`,
+      "",
+      `budget      declined · rule ${result.decision.budgetRuleId}`,
+      `anchor      ${anchorField(result.anchor)}`,
+      `payment     none — nothing moved`,
+    ];
+  }
+
+  return [
+    `${slug} bought — ${formatHbar(result.purchase.amountTinybar)} HBAR, within budget`,
+    "",
+    `budget      approved · rule ${result.decision.budgetRuleId}`,
+    `anchor      ${anchorField(result.anchor)}`,
+    `payment     ${result.purchase.settlement.transactionId} · ${hashscanUrl(result.purchase.settlement)}`,
+  ];
+}
+
+/**
+ * The report's last field. Never returns an empty or absent value: an
+ * unfiled receipt is the one outcome that must be loud rather than silent,
+ * because a spend the ledger cannot see is a spend the next budget check
+ * cannot subtract -- which is exactly when a cap stops binding.
+ */
+export function receiptField(
+  outcome: DecideAndBuyResult["outcome"],
+  mode: "headless" | "caller-supplied",
+  filed: boolean,
+): string {
+  if (outcome === "anchor_failed") return "receipt     none — nothing to file";
+  // A decline anchored correctly is a complete, successful outcome on its
+  // own -- nothing settled, so there is no receipt to file. This is what
+  // anchoring a refusal is for: the anchor is already the durable evidence,
+  // whether or not anyone ever files anything about it.
+  if (outcome === "declined") {
+    return "receipt     none — a refusal files nothing; the anchor is the record";
+  }
+  if (filed) return "receipt     filed";
+  return mode === "headless"
+    ? "receipt     NOT FILED — filing failed; file the receipt below before the next purchase"
+    : "receipt     NOT FILED — file this to askReceipts yourself (save_receipt) before the next purchase";
+}
+
 function formatHbar(tinybar: bigint): string {
   const whole = tinybar / TINYBAR_PER_HBAR;
   const fraction = tinybar % TINYBAR_PER_HBAR;
@@ -241,23 +323,15 @@ async function main(): Promise<void> {
     checkBudget,
   );
 
-  if (result.outcome === "anchor_failed") {
-    console.error(`ANCHOR FAILED: ${args.slug}`);
-    console.error(result.message);
-    process.exitCode = exitCodeFor("anchor_failed", false);
-    return;
-  }
-
-  if (result.outcome === "declined") {
-    console.log(`DECLINED: ${args.slug}`);
-    console.log(`budget rule: ${result.decision.budgetRuleId}`);
-    if (result.decision.reason) console.log(`reason: ${result.decision.reason}`);
-    console.log(`decision anchor: topic ${result.anchor.topicId ?? "unknown"} hash ${result.anchor.hash}`);
-    // A decline anchored correctly is a complete, successful outcome on its
-    // own -- nothing settled, so there is no receipt to file. This is what
-    // anchoring a refusal is for: the anchor above is already the durable
-    // evidence, whether or not anyone ever files anything about it.
-    process.exitCode = exitCodeFor("declined", false);
+  // Neither outcome below settles anything, so the whole report -- last
+  // field included -- is known up front and prints in one go.
+  if (result.outcome === "anchor_failed" || result.outcome === "declined") {
+    for (const line of reportHead(args.slug, result)) console.log(line);
+    console.log(receiptField(result.outcome, mode, false));
+    process.exitCode = exitCodeFor(
+      result.outcome === "anchor_failed" ? "anchor_failed" : "declined",
+      false,
+    );
     return;
   }
 
@@ -281,10 +355,12 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log(`BOUGHT: ${args.slug}`);
-  console.log(`paid: ${formatHbar(result.purchase.amountTinybar)} HBAR`);
-  console.log(`transaction: ${result.purchase.settlement.transactionId}`);
-  console.log(`hashscan: ${hashscanUrl(result.purchase.settlement)}`);
+  // Printed BEFORE the filing attempt below, so a filing that hangs or throws
+  // can never cost the operator sight of the transaction id and HashScan link
+  // for a payment that has already settled. The `receipt` field is the only
+  // one that has to wait for filing, and it is the last field anyway; filing
+  // failures go to stderr, so stdout still reads as one contiguous report.
+  for (const line of reportHead(args.slug, result)) console.log(line);
 
   let filed = false;
   if (mode === "headless") {
@@ -305,17 +381,13 @@ async function main(): Promise<void> {
         args.agent,
       );
       filed = true;
-      console.log("filed to askReceipts: ok");
     } catch (error) {
       console.error(`Could not file receipt to askReceipts: ${describeError(error)}`);
       console.error("The purchase and its anchor are still real -- only the filing failed.");
     }
-  } else {
-    console.log(
-      "note: caller-supplied mode -- no ledger credential in this process. File the receipt " +
-        "below yourself (save_receipt), or the next budget check will not see this spend.",
-    );
   }
+
+  console.log(receiptField("purchased", mode, filed));
 
   console.log(JSON.stringify(receipt, null, 2));
 

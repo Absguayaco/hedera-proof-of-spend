@@ -67,16 +67,25 @@ const APPROVAL_SLUG = "espresso";
 const DECLINE_SLUG = "cold-brew";
 
 /**
- * Converts a tinybar price to the nominal USD amount check_budget's
- * `amount` field requires, using a DELIBERATELY FABRICATED, DISCLOSED
- * conversion rate: 1 HBAR = $1.00 (nominal, for demo legibility only —
- * NOT a real market rate; a real HBAR/USD rate is some awkward fraction
- * of a cent and would misleadingly look like real price-feed data). This
- * lets a judge read priceTinybar straight off packages/store/src/menu.ts
- * and predict the amount check_budget will see: espresso 15_000_000n ->
- * $0.15, flat-white 25_000_000n -> $0.25, cold-brew 35_000_000n -> $0.35.
+ * Converts a tinybar price to the HBAR amount check_budget's `amount`
+ * field requires. This is a unit change within one asset (10^8 tinybar =
+ * 1 HBAR), NOT a currency conversion -- there is no exchange rate here
+ * and no price feed is consulted. A judge can read priceTinybar straight
+ * off packages/store/src/menu.ts and predict the amount check_budget will
+ * see: espresso 15_000_000n -> 0.15 HBAR, flat-white 25_000_000n -> 0.25
+ * HBAR, cold-brew 35_000_000n -> 0.35 HBAR.
+ *
+ * This used to report the same figures as nominal USD, under a disclosed
+ * fabricated 1 HBAR = $1.00 rate. That made every receipt this script
+ * filed invisible to an HBAR budget rule: askReceipts counts spend by
+ * filtering on currency, so a USD receipt is excluded from an HBAR rule's
+ * window entirely -- the spend never registers, and the next agent is
+ * told it may spend money that is already gone. Because the fabricated
+ * rate was 1:1 the numbers stayed right, which is exactly why it went
+ * unnoticed. See .claude/skills/anchor-before-pay/SKILL.md, "Always
+ * HBAR".
  */
-export function tinybarToNominalUsd(priceTinybar: bigint): number {
+export function tinybarToHbar(priceTinybar: bigint): number {
   if (priceTinybar <= 0n) {
     throw new Error(`Cannot price a non-positive tinybar amount for check_budget: ${priceTinybar}`);
   }
@@ -158,10 +167,16 @@ export function buildDescribePurchase(menu: ReadonlyMap<string, MenuItemPrice>):
       );
     }
     return {
-      amount: tinybarToNominalUsd(item.priceTinybar),
-      currency: "USD",
+      amount: tinybarToHbar(item.priceTinybar),
+      // Must be HBAR, and must match the budget rule's own currency:
+      // askReceipts filters spend by currency, so a receipt in anything
+      // else is excluded from an HBAR rule's window and the cap silently
+      // stops binding. scripts/seed-budget.ts provisions its rule in HBAR
+      // for the same reason -- the two have to agree or the demo's own
+      // decline stops declining.
+      currency: "HBAR",
       merchant: MERCHANT,
-      description: `${item.name} -- ${item.priceTinybar.toString()} tinybar (nominal 1 HBAR = $1.00 demo rate)`,
+      description: `${item.name} -- ${item.priceTinybar.toString()} tinybar`,
     };
   };
 }
@@ -698,7 +713,7 @@ async function main(): Promise<void> {
 // Only run when this file is executed directly (`npm run e2e`, or
 // `node scripts/e2e.ts`) -- not when imported, e.g. by scripts/buy.ts for
 // its shared helpers (buildReceipt, bindReceiptToDecision,
-// buildDescribePurchase, fetchMenu, tinybarToNominalUsd). Without this
+// buildDescribePurchase, fetchMenu, tinybarToHbar). Without this
 // guard, importing anything from this file runs the entire live
 // walkthrough -- real network calls, a real payment -- as a side effect of
 // the import alone. Same pattern as packages/store/src/index.ts and
