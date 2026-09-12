@@ -11,8 +11,26 @@ hash of that receipt too. Anyone can take a receipt, hash it themselves, query
 Hedera's public mirror node — an unauthenticated REST API, no Hedera account,
 no SDK, `curl` is enough — and confirm two things independently: that the
 ledger never quietly changed its mind, and that the decision to spend
-genuinely predates the money moving. The proof does not come from us, and
-checking it does not require trusting us either.
+genuinely predates the money moving.
+
+Why Hedera specifically, not just "a chain": the public mirror node is an
+unauthenticated REST API — the two `curl` commands in "How the receipt hash
+is computed" below are the entire tool a third party needs, no wallet, no
+SDK, no account. That is the argument for a notary layer that happens to be
+true of Hedera and would need restating for most other chains.
+
+Concretely: if the agent is told "refuse" and pays anyway, the anchored
+refusal plus the on-chain payment is proof the agent disobeyed — the
+operator cannot quietly delete the refusal and claim it never happened. If
+a spend is disputed later, the anchored approval's consensus timestamp
+proves it was authorized *before* the payment settled, not composed
+afterward to justify it. If an auditor asks whether spending controls were
+real, an anchored refusal cannot be manufactured retroactively — unlike a
+list pulled from the ledger's own database the week the auditor calls. And
+if a vendor claims a purchase attempt never happened, the anchored decision
+names the amount, currency and payee, timestamped, so the vendor can check
+it without access to either side's systems. The proof does not come from
+us, and checking it does not require trusting us either.
 
 > **Testnet only.** This signs transactions from a private key you supply. It
 > refuses to start against any network but `hedera:testnet`. Use a throwaway
@@ -287,6 +305,20 @@ and the hash is the SHA-256 of those bytes. `npm run e2e` produces a real one
 of these, plus the real topic id, sequence number, and HashScan links it
 anchors to — run it once and you have your own worked example with numbers
 that are actually yours, not ones lifted from this file.
+
+Real evidence, not a constructed example — anchored live on 2026-09-11:
+
+    curl https://testnet.mirrornode.hedera.com/api/v1/topics/0.0.10475837/messages/1
+
+returns a message that decodes to exactly
+`{"v":1,"h":"6aa1af6f368868306de6c71c91bea2041ae492cebe72c3c3e7b4dbd7657b8a3b"}`
+— on a topic (`0.0.10475837`) whose own `submit_key` is set and whose
+`admin_key` is `null`, confirmed by:
+
+    curl https://testnet.mirrornode.hedera.com/api/v1/topics/0.0.10475837
+
+https://hashscan.io/testnet/topic/0.0.10475837/messages shows the same
+message, on a network neither of us controls.
 
 ## What this proves, and what it does not
 
