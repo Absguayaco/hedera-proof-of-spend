@@ -243,14 +243,19 @@ export function createLiveCheckBudget(
       })) as CallToolResult;
 
       if (result.isError) {
-        throw new Error(`check_budget reported a tool error: ${JSON.stringify(result.content)}`);
+        // Not echoed: the response can carry budget-rule descriptions,
+        // merchant names, and amounts -- same reasoning as
+        // packages/anchor/src/index.ts's "the key itself is not reported
+        // here on purpose".
+        throw new Error("check_budget reported a tool error (content redacted).");
       }
 
       const content = Array.isArray(result.content) ? result.content : [];
       const [first] = content;
       if (!first || first.type !== "text") {
         throw new Error(
-          `check_budget returned no text content block: ${JSON.stringify(result.content)}`,
+          `check_budget returned no text content block (shape: ${typeof result.content}, ` +
+            `length ${Array.isArray(result.content) ? result.content.length : "n/a"}).`,
         );
       }
 

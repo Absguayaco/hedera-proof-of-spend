@@ -195,6 +195,23 @@ async function main(): Promise<void> {
 
   const result = await verify(receipt, { topicId, network });
   console.log(`outcome: ${result.outcome}`);
+  // parseArgs() already folds HEDERA_NETWORK into `network` whenever no
+  // explicit --network flag was given, so checking `!network` here would
+  // never fire (it would already be the env var's own value) -- what
+  // actually distinguishes "this came from an ambient env var" is the
+  // ABSENCE of an explicit --network on argv, checked directly rather than
+  // via the already-merged `network` value.
+  if (
+    result.outcome === "missing" &&
+    !process.argv.slice(2).includes("--network") &&
+    process.env.HEDERA_NETWORK
+  ) {
+    console.log(
+      `note: HEDERA_NETWORK is set to "${process.env.HEDERA_NETWORK}" in this environment -- ` +
+        `if the receipt was anchored on a different network, "missing" is expected, not a ` +
+        `sign of tampering.`,
+    );
+  }
   console.log(`computed hash: ${result.computedHash}`);
   if (result.consensusTimestamp) console.log(`consensus timestamp: ${result.consensusTimestamp}`);
   if (result.hashscanUrl) console.log(`hashscan: ${result.hashscanUrl}`);
