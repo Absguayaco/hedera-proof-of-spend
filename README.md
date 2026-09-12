@@ -158,7 +158,7 @@ for debugging it.
 
 `npm run buy` (no `:raw`) is the authorised path: it always anchors a
 decision to HCS, confirmed at consensus, before any payment settles — see
-`.claude/skills/buying-from-this-store/SKILL.md` for the full sequence and
+`.claude/skills/anchor-before-pay/SKILL.md` for the full sequence and
 worked examples.
 
 ## Deploying the store

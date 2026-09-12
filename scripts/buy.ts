@@ -7,7 +7,7 @@
  * tool with no budget check and no anchor), this command always goes
  * through decide-and-buy.ts's decideAndBuy() -- there is no code path here
  * that reaches a payment without a decision already confirmed at HCS
- * consensus. See .claude/skills/buying-from-this-store/SKILL.md for the
+ * consensus. See .claude/skills/anchor-before-pay/SKILL.md for the
  * full rationale and worked examples.
  *
  * Two callers, one command:

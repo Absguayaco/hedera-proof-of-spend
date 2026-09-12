@@ -7,7 +7,7 @@
  * authorised purchase path. `npm run buy` (scripts/buy.ts) is the gated
  * command: it always anchors a decision to HCS, confirmed at consensus,
  * before any payment settles. See
- * .claude/skills/buying-from-this-store/SKILL.md.
+ * .claude/skills/anchor-before-pay/SKILL.md.
  */
 import { assertTestnet, buyResource, hashscanUrl } from "./index.ts";
 
