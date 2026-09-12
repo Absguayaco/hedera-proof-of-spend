@@ -46,6 +46,8 @@ async function main(): Promise<void> {
 
   assertTestnet(process.env.HEDERA_NETWORK);
 
+  console.log("note: no budget check, no anchor -- use npm run e2e for the authorised, audited path.");
+
   const result = await buyResource({
     url: `${storeUrl()}/buy/${slug}`,
     operatorId,

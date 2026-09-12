@@ -189,6 +189,17 @@ describe("anchorReceipt", () => {
     expect(result.error).not.toContain(OPERATOR_KEY);
   });
 
+  it("never throws even when operatorKey isn't actually a string (a caller bypassing the type system)", async () => {
+    const result = await anchorReceipt(
+      RECEIPT,
+      { operatorId: OPERATOR_ID, operatorKey: undefined as unknown as string },
+      fakeHcs(),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("type undefined");
+  });
+
   it("never throws: an invalid operator id becomes {ok:false, error}, not a rejected promise", async () => {
     await expect(
       anchorReceipt(

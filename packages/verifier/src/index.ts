@@ -1,4 +1,4 @@
-import { hashReceipt } from "./hash.ts";
+import { hashReceipt, HASH_VERSION } from "./hash.ts";
 
 /**
  * An independent verifier.
@@ -12,7 +12,9 @@ import { hashReceipt } from "./hash.ts";
  *   match   — this is exactly what was recorded, at the time claimed
  *   missing — never anchored; may have been added to the ledger afterwards
  *   altered — a hash was anchored for this receipt id, but the receipt differs,
- *             so the record changed after the fact
+ *             so the record changed after the fact. "altered" is reachable
+ *             via verifyAtSequence() below, which checks a claimed position
+ *             instead of scanning.
  *
  * What this does NOT prove: that the receipt is true. A ledger that files a
  * wrong receipt and anchors it has anchored a wrong receipt, immutably. This
@@ -61,6 +63,42 @@ function mirrorBaseUrl(network: string): string {
   return MIRROR_NODE_URL[network];
 }
 
+const TOPIC_ID = /^\d+\.\d+\.\d+$/;
+const SEQUENCE_NUMBER = /^\d+$/;
+
+/**
+ * Rejects a topicId that is not in the exact shard.realm.num shape the
+ * mirror node expects, BEFORE it is interpolated into a URL path. topicId
+ * can arrive from an untrusted receipt (see
+ * packages/verifier/src/cli.ts's resolveTopicId() receipt-fallback path,
+ * and extractDecisionReference()'s decision.topicId) -- without this
+ * guard, a crafted value containing path segments (e.g.
+ * "../../0.0.OTHER/messages") could make the mirror-node request land on
+ * a DIFFERENT topic than the one the caller believes it is checking,
+ * silently defeating an explicit --topic. Same defensive shape this file's
+ * own toDashTransactionId() already applies to transaction ids before use.
+ */
+function assertValidTopicId(topicId: string): void {
+  if (!TOPIC_ID.test(topicId)) {
+    throw new Error(`Not a Hedera topic id (got "${topicId}"). Expected shard.realm.num, e.g. 0.0.12345.`);
+  }
+}
+
+/** Same reasoning as assertValidTopicId() above, for the sequenceNumber
+ *  verifyAtSequence() interpolates into its own URL path -- it arrives from
+ *  a receipt's decision.sequenceNumber, equally untrusted. A value like
+ *  "../../0.0.OTHER/messages/1" would otherwise let a crafted receipt
+ *  redirect the lookup to any topic, message log, or (via a scheme-relative
+ *  value) origin of its choosing, while --topic's own value is left
+ *  unvalidated in the same string. */
+function assertValidSequenceNumber(sequenceNumber: string): void {
+  if (!SEQUENCE_NUMBER.test(sequenceNumber)) {
+    throw new Error(
+      `Not a topic message sequence number (got "${sequenceNumber}"). Expected a non-negative integer.`,
+    );
+  }
+}
+
 interface MirrorMessage {
   readonly message: string; // base64
   readonly consensus_timestamp: string;
@@ -82,6 +120,7 @@ export async function verify(
   fetchImpl: typeof fetch = fetch,
 ): Promise<VerifyResult> {
   const computedHash = hashReceipt(receipt);
+  assertValidTopicId(opts.topicId);
   const network = opts.network ?? "testnet";
   const base = mirrorBaseUrl(network);
 
@@ -108,6 +147,7 @@ export async function verify(
         if (
           decoded !== null &&
           typeof decoded === "object" &&
+          (decoded as { v?: unknown }).v === HASH_VERSION &&
           (decoded as { h?: unknown }).h === computedHash
         ) {
           return {
@@ -134,6 +174,103 @@ export async function verify(
   // privacy choice: "the topic alone tells an observer nothing"). Without a
   // correlator those two cases are indistinguishable from a topic scan, so
   // "altered" is not reachable here; every non-match reports "missing".
+  return { outcome: "missing", computedHash };
+}
+
+const SEQUENCE_MAX_ATTEMPTS = 6;
+const SEQUENCE_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Confirms a specific CLAIMED anchor position instead of scanning for a
+ * hash: fetches the single message at exactly `sequenceNumber` on
+ * `topicId` (GET /api/v1/topics/{id}/messages/{sequenceNumber} -- confirmed
+ * live to return one message object, not a page) and reports:
+ *
+ *   match   -- that position holds this exact hash, under this hash version
+ *   altered -- a message exists at that position, but it is NOT this one
+ *              (wrong hash, or the right hash under a different version) --
+ *              the first reachable "altered" outcome in this file. verify()'s
+ *              scan can never produce this: AnchorMessage carries no
+ *              correlator, so "never anchored" and "anchored, then the
+ *              record changed" are indistinguishable without knowing WHERE
+ *              to look. A claimed position removes that ambiguity -- if
+ *              something is there and it isn't this artifact, something
+ *              was altered, either the artifact itself or the position
+ *              reference pointing at it.
+ *   missing -- no message at that position yet (retried for mirror-node
+ *              ingestion lag, same 6-attempts/5s shape as this file's other
+ *              retried lookups)
+ *
+ * Only meaningful for a target that carries its OWN claimed position (a
+ * spend decision, via the {topicId, sequenceNumber} reference
+ * linkReceiptToDecision() embeds in a receipt) -- a receipt has no such
+ * self-reference (its own anchor's position is only known AFTER it is
+ * hashed, so it cannot be embedded in the thing being hashed) and stays on
+ * verify()'s scan-based path.
+ */
+export async function verifyAtSequence(
+  target: unknown,
+  opts: { topicId: string; sequenceNumber: string; network?: string },
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
+): Promise<VerifyResult> {
+  const computedHash = hashReceipt(target);
+  assertValidTopicId(opts.topicId);
+  assertValidSequenceNumber(opts.sequenceNumber);
+  const network = opts.network ?? "testnet";
+  const base = mirrorBaseUrl(network);
+  const url = `${base}/api/v1/topics/${opts.topicId}/messages/${opts.sequenceNumber}`;
+
+  for (let attempt = 1; attempt <= SEQUENCE_MAX_ATTEMPTS; attempt += 1) {
+    const response = await fetchImpl(url);
+
+    if (response.status === 404) {
+      if (attempt < SEQUENCE_MAX_ATTEMPTS) {
+        await sleepImpl(SEQUENCE_RETRY_DELAY_MS);
+        continue;
+      }
+      return { outcome: "missing", computedHash };
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Mirror node returned ${response.status} for topic ${opts.topicId} message ` +
+          `${opts.sequenceNumber}. Check the topic id and sequence number.`,
+      );
+    }
+
+    const entry = (await response.json()) as Partial<MirrorMessage>;
+    if (typeof entry.message !== "string" || typeof entry.consensus_timestamp !== "string") {
+      throw new Error(
+        `Mirror node returned 200 but not a topic-message shape for topic ${opts.topicId} ` +
+          `message ${opts.sequenceNumber}. Got: ${JSON.stringify(entry).slice(0, 200)}`,
+      );
+    }
+
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(Buffer.from(entry.message, "base64").toString("utf8"));
+    } catch {
+      decoded = undefined;
+    }
+
+    const isMatch =
+      decoded !== null &&
+      typeof decoded === "object" &&
+      (decoded as { v?: unknown }).v === HASH_VERSION &&
+      (decoded as { h?: unknown }).h === computedHash;
+
+    return {
+      outcome: isMatch ? "match" : "altered",
+      computedHash,
+      consensusTimestamp: entry.consensus_timestamp,
+      sequenceNumber: entry.sequence_number,
+      hashscanUrl: `https://hashscan.io/${network}/topic/${opts.topicId}/messages`,
+    };
+  }
+
+  // Unreachable: the loop above always returns before exhausting its own
+  // bound. Present only so TypeScript sees every path returning.
   return { outcome: "missing", computedHash };
 }
 

@@ -6,7 +6,8 @@
  * one step in the walkthrough whose evidence does not come from us.
  */
 import { readFile } from "node:fs/promises";
-import { verify } from "./index.ts";
+import { verify, verifyAtSequence, verifyDecisionPrecedesSettlement } from "./index.ts";
+import type { Outcome, OrderingProofResult, VerifyResult } from "./index.ts";
 
 interface Args {
   readonly receiptPath: string;
@@ -97,6 +98,112 @@ export function resolveTopicId(explicit: string | undefined, receipt: unknown): 
   );
 }
 
+/** What `main()` needs to run the ordering proof: the full authorizing
+ *  Decision (the preimage a third party needs to re-hash), the exact topic
+ *  position it was anchored at, and the settlement transaction id it must
+ *  precede. Returns undefined -- not a throw -- when the receipt doesn't
+ *  carry this shape: "cannot check ordering" is a legitimate, disclosed
+ *  outcome for an older or hand-authored receipt, not an error. */
+export interface DecisionReference {
+  readonly authorizingDecision: unknown;
+  readonly topicId: string;
+  readonly sequenceNumber: string;
+  readonly settlementTransactionId: string;
+}
+
+export function extractDecisionReference(receipt: unknown): DecisionReference | undefined {
+  if (receipt === null || typeof receipt !== "object") return undefined;
+  const r = receipt as Record<string, unknown>;
+
+  // authorizingDecision itself has no fixed shape here (it's re-hashed
+  // whole by verifyAtSequence(), which will correctly report "altered" for
+  // any value that doesn't match what was actually anchored) -- but it
+  // must genuinely be present and non-null, not merely an own key whose
+  // value happens to be undefined/null.
+  if (r.authorizingDecision === undefined || r.authorizingDecision === null) {
+    return undefined;
+  }
+
+  const decision = r.decision;
+  if (decision === null || typeof decision !== "object") return undefined;
+  const decisionRecord = decision as Record<string, unknown>;
+  const topicId = decisionRecord.topicId;
+  const sequenceNumber = decisionRecord.sequenceNumber;
+  if (typeof topicId !== "string" || typeof sequenceNumber !== "string") return undefined;
+
+  const settlement = r.settlement;
+  if (settlement === null || typeof settlement !== "object") return undefined;
+  const settlementTransactionId = (settlement as Record<string, unknown>).transactionId;
+  if (typeof settlementTransactionId !== "string") return undefined;
+
+  return {
+    authorizingDecision: r.authorizingDecision,
+    topicId,
+    sequenceNumber,
+    settlementTransactionId,
+  };
+}
+
+/**
+ * The pass/fail contract this whole tool exists to enforce, pulled out as
+ * a pure function so it is directly testable without executing main()'s
+ * file I/O and network calls. Requires the receipt's own hash to match,
+ * AND -- only when the receipt actually carries an ordering reference --
+ * that the decision's own anchor matched AND that it genuinely preceded
+ * settlement. A receipt with no ordering reference at all still passes on
+ * hash alone (matching this repo's plan-mandated formula: "core proof
+ * succeeded, ordering not checked" is a legitimate, disclosed outcome, not
+ * a failure) -- but ANY of "altered", "missing", or a non-"decision_before_
+ * settlement" ordering outcome, once a reference IS present, is a failure.
+ */
+export function classifyRun(
+  receiptOutcome: Outcome,
+  hasReference: boolean,
+  decisionOutcome: Outcome | undefined,
+  orderingOutcome: OrderingProofResult["outcome"] | undefined,
+): boolean {
+  return (
+    receiptOutcome === "match" &&
+    (!hasReference ||
+      (decisionOutcome === "match" && orderingOutcome === "decision_before_settlement"))
+  );
+}
+
+/** What `main()` needs to know about the authorizing decision itself, for
+ *  its own console output -- so an auditor actually SEES what was
+ *  authorized (verdict, amount, payee), not just "match"/"altered". Loose
+ *  about every field but `verdict` (each missing/wrong-typed field just
+ *  shows as "unknown ..."), since packages/verifier has no dependency on
+ *  scripts/decide-and-buy.ts's Decision type (see this package's
+ *  package.json -- that dependency list is the claim) and a receipt's
+ *  authorizingDecision is, to this file, forever just `unknown`. */
+export interface AuthorizedDecisionSummary {
+  readonly verdict: "approved" | "declined";
+  readonly summary: string;
+}
+
+export function describeAuthorizedDecision(decision: unknown): AuthorizedDecisionSummary | undefined {
+  if (decision === null || typeof decision !== "object") return undefined;
+  const d = decision as Record<string, unknown>;
+  if (d.verdict !== "approved" && d.verdict !== "declined") return undefined;
+
+  const agent = typeof d.agent === "string" ? d.agent : "unknown agent";
+  const resource = typeof d.resource === "string" ? d.resource : "unknown resource";
+  const amount = typeof d.amount === "string" ? d.amount : "unknown amount";
+  const currency = typeof d.currency === "string" ? d.currency : "unknown currency";
+  const payTo = typeof d.payTo === "string" ? d.payTo : "unknown payee";
+
+  return {
+    verdict: d.verdict,
+    summary: `${agent} -> ${resource}: ${d.verdict} (${amount} ${currency} to ${payTo})`,
+  };
+}
+
+function section(title: string): void {
+  console.log("");
+  console.log(`=== ${title} ===`);
+}
+
 async function main(): Promise<void> {
   const { receiptPath, topicId: explicitTopicId, network } = parseArgs(process.argv.slice(2), process.env);
 
@@ -110,25 +217,130 @@ async function main(): Promise<void> {
     console.log(`topic: ${topicId} (from the receipt's own decision.topicId reference)`);
     console.log(
       "WARNING: this topic id came from the receipt itself, not from something you already " +
-        "knew to be this agent's topic. A \"match\" below proves the hash sits on a topic " +
-        "SOMEONE owns -- not that THIS agent anchored it. Pass --topic <the agent's known " +
+        'knew to be this agent\'s topic. A "match" below proves the hash sits on a topic ' +
+        'SOMEONE owns -- not that THIS agent anchored it. Pass --topic <the agent\'s known ' +
         "topic id> for a check that actually binds the result to a specific agent.",
     );
   }
 
   const result = await verify(receipt, { topicId, network });
-
   console.log(`outcome: ${result.outcome}`);
+  // parseArgs() already folds HEDERA_NETWORK into `network` whenever no
+  // explicit --network flag was given, so checking `!network` here would
+  // never fire (it would already be the env var's own value) -- what
+  // actually distinguishes "this came from an ambient env var" is the
+  // ABSENCE of an explicit --network on argv, checked directly rather than
+  // via the already-merged `network` value.
+  if (
+    result.outcome === "missing" &&
+    !process.argv.slice(2).includes("--network") &&
+    process.env.HEDERA_NETWORK
+  ) {
+    console.log(
+      `note: HEDERA_NETWORK is set to "${process.env.HEDERA_NETWORK}" in this environment -- ` +
+        `if the receipt was anchored on a different network, "missing" is expected, not a ` +
+        `sign of tampering.`,
+    );
+  }
   console.log(`computed hash: ${result.computedHash}`);
   if (result.consensusTimestamp) console.log(`consensus timestamp: ${result.consensusTimestamp}`);
   if (result.hashscanUrl) console.log(`hashscan: ${result.hashscanUrl}`);
 
-  if (result.outcome !== "match") {
+  // --- Ordering proof (A2/A3/A6/A7): the same check scripts/e2e.ts already
+  // proves live, run here against nothing but the receipt file and the
+  // public mirror node -- this is the one command a third party actually
+  // runs, so this is where the ordering claim has to hold. ---
+  section("Ordering proof (A2/A3/A6/A7)");
+  const reference = extractDecisionReference(receipt);
+  let decisionResult: VerifyResult | undefined;
+  let orderingResult: OrderingProofResult | undefined;
+
+  if (!reference) {
+    console.log(
+      "Not checked: this receipt does not carry a decision/settlement reference " +
+        "(authorizingDecision, decision.topicId/sequenceNumber, settlement.transactionId).",
+    );
+  } else {
+    // Looked up on the SAME topic the hash was just checked against --
+    // topicId, not necessarily reference.topicId. If --topic was given
+    // specifically because the caller already trusts it as this agent's,
+    // the decision anchor must be checked there too, not wherever the
+    // receipt separately claims -- otherwise --topic would only bind half
+    // of what this command checks.
+    if (reference.topicId !== topicId) {
+      console.log(
+        `note: the receipt's own decision.topicId ("${reference.topicId}") differs from the ` +
+          `topic actually being checked ("${topicId}") -- looking up the decision at "${topicId}".`,
+      );
+    }
+    decisionResult = await verifyAtSequence(reference.authorizingDecision, {
+      topicId,
+      sequenceNumber: reference.sequenceNumber,
+      network,
+    });
+    console.log(`decision anchor outcome: ${decisionResult.outcome}`);
+    if (decisionResult.consensusTimestamp) {
+      console.log(`decision consensus timestamp: ${decisionResult.consensusTimestamp}`);
+    }
+
+    // Print what was actually authorized -- not just that the anchor
+    // matched. Without this, a receipt whose decision was DECLINED (the
+    // agent was told to refuse and paid anyway) still reports a clean
+    // "decision anchor outcome: match" here with no visible sign of what
+    // that decision actually said, and this tool's own README claims that
+    // exact scenario is provable.
+    const decisionSummary = describeAuthorizedDecision(reference.authorizingDecision);
+    if (decisionSummary) {
+      console.log(`authorizing decision: ${decisionSummary.summary}`);
+      if (decisionSummary.verdict === "declined") {
+        console.log(
+          "NOTE: this decision was DECLINED. If the settlement below still succeeded, this is " +
+            "proof the agent disobeyed it and paid anyway -- exactly what anchoring a refusal " +
+            "is for: an operator cannot quietly delete it or claim it never happened.",
+        );
+      }
+    }
+
+    orderingResult = await verifyDecisionPrecedesSettlement(
+      decisionResult,
+      reference.settlementTransactionId,
+      { network },
+    );
+    console.log(`ordering outcome: ${orderingResult.outcome}`);
+    if (orderingResult.decisionConsensusTimestamp) {
+      console.log(`decision consensus timestamp (ordering proof): ${orderingResult.decisionConsensusTimestamp}`);
+    }
+    if (orderingResult.settlementConsensusTimestamp) {
+      console.log(`settlement consensus timestamp: ${orderingResult.settlementConsensusTimestamp}`);
+    }
+  }
+
+  const coreSuccess = classifyRun(
+    result.outcome,
+    reference !== undefined,
+    decisionResult?.outcome,
+    orderingResult?.outcome,
+  );
+
+  console.log("");
+  console.log(
+    coreSuccess
+      ? `VERIFIED${reference ? " -- hash matched, decision anchor matched, ordering holds." : " (hash matched; ordering not checked -- see above)."}`
+      : "NOT VERIFIED -- see outcomes above.",
+  );
+
+  if (!coreSuccess) {
     process.exitCode = 1;
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run when this file is executed directly (`npm run verify`, or
+// `node packages/verifier/src/cli.ts`) -- not when imported, e.g. by this
+// file's own test suite. Same pattern as packages/store/src/index.ts's own
+// run-guard.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

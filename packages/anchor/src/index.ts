@@ -69,12 +69,20 @@ export async function anchorReceipt(
   try {
     operatorKey = PrivateKey.fromString(opts.operatorKey);
   } catch {
+    // opts.operatorKey.length would itself throw here if a caller (bypassing
+    // the type system, e.g. a plain JS caller) ever passes something that
+    // isn't actually a string -- which would break this function's
+    // documented never-throws contract from inside its own error path.
+    const keyDescription =
+      typeof opts.operatorKey === "string"
+        ? `${opts.operatorKey.length} characters`
+        : `type ${typeof opts.operatorKey}`;
     return {
       ok: false,
       hash,
       error:
         `HEDERA_OPERATOR_KEY is not a valid Hedera private key ` +
-        `(${opts.operatorKey.length} characters). See .env.example. ` +
+        `(${keyDescription}). See .env.example. ` +
         `The key itself is not reported here on purpose.`,
     };
   }

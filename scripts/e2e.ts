@@ -50,11 +50,12 @@ export {};
 import { anchorReceipt } from "@proof-of-spend/anchor";
 import { assertTestnet, hashscanUrl } from "@proof-of-spend/buyer";
 import type { BuyResult } from "@proof-of-spend/buyer";
-import { verify, verifyDecisionPrecedesSettlement, sequenceNumbersMatch } from "@proof-of-spend/verifier";
+import { verify, verifyAtSequence, verifyDecisionPrecedesSettlement } from "@proof-of-spend/verifier";
 import type { OrderingProofResult, VerifyResult } from "@proof-of-spend/verifier";
 import { createLiveCheckBudget } from "./check-budget-live.ts";
 import type { CheckBudgetPurchase, DescribePurchase } from "./check-budget-live.ts";
 import { decideAndBuy, linkReceiptToDecision } from "./decide-and-buy.ts";
+import { saveReceiptLive } from "./save-receipt-live.ts";
 import type { BudgetCheckRequest, Decision, DecideAndBuyResult } from "./decide-and-buy.ts";
 
 const TINYBAR_PER_HBAR = 100_000_000n;
@@ -332,6 +333,7 @@ async function main(): Promise<void> {
   const menu = await fetchMenu(store);
   const describePurchase = buildDescribePurchase(menu);
   const checkBudget = createLiveCheckBudget({ url: ledger, agentKey }, describePurchase);
+  const saveReceipt = saveReceiptLive({ url: ledger, agentKey });
 
   // --- Steps 1-2: check_budget + buy, for a cheap item expected to approve ---
   section("Step 1: check_budget");
@@ -382,9 +384,14 @@ async function main(): Promise<void> {
     );
     console.error(
       approvalResult.outcome === "declined"
-        ? "The pre-provisioned budget rule appears to be refusing even the cheap item -- " +
-            "either the rule's threshold is wrong (it must sit strictly between $0.25 and " +
-            "$0.35) or askReceipts could not evaluate it -- see the `reason:` line above. See " +
+        ? "The pre-provisioned budget rule appears to be refusing even the cheap item. Three " +
+            "possible causes: (1) the rule's threshold is wrong (it must sit strictly between " +
+            "$0.25 and $0.35); (2) askReceipts could not evaluate it -- see the `reason:` line " +
+            "above; or (3) accumulated spend from previous runs of this same walkthrough has " +
+            "already put the account over that threshold -- this script files every settled " +
+            "purchase to askReceipts (see \"Filing the receipt to askReceipts\" above), so a " +
+            "genuinely-correct rule can start refusing on a later run for exactly that reason, " +
+            "not because the rule itself is wrong. See " +
             "docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's Prerequisite section for " +
             "the exact proposed wording."
         : "The decision could not be anchored to HCS, so nothing was bought -- see the anchor error above.",
@@ -472,6 +479,34 @@ async function main(): Promise<void> {
   }
   console.log(JSON.stringify(receipt, null, 2));
 
+  section("Filing the receipt to askReceipts");
+  try {
+    const purchaseDescription = describePurchase({ agent: AGENT_ID, resource: approvalResource });
+    await saveReceipt(
+      {
+        merchant: purchaseDescription.merchant ?? MERCHANT,
+        amount: purchaseDescription.amount,
+        currency: purchaseDescription.currency,
+        timestamp: new Date().toISOString(),
+        paymentIntentId: purchase.settlement.transactionId,
+        lineItems: [
+          {
+            description: purchaseDescription.description ?? APPROVAL_SLUG,
+            amount: purchaseDescription.amount,
+          },
+        ],
+      },
+      AGENT_ID,
+    );
+    console.log("filed to askReceipts: ok");
+  } catch (error) {
+    console.error(`Could not file receipt to askReceipts: ${describeError(error)}`);
+    console.error(
+      "Continuing -- this does not fail the run, but a later check_budget call will not see " +
+        "this purchase's spend without it.",
+    );
+  }
+
   // --- Step 4: anchor the receipt hash to HCS ---
   section("Step 4: hash the receipt and submit the hash to the HCS topic");
   const receiptAnchor = await anchorReceipt(receipt, { operatorId, operatorKey, topicId });
@@ -526,18 +561,27 @@ async function main(): Promise<void> {
     console.log("Skipped: the receipt could not be bound to its decision (see Step 3 above).");
   } else {
     try {
-      decisionVerifyResult = await verifyWithRetry(approvalResult.decision, { topicId }, "decision");
+      // Position-based, not a scan: this looks up the exact message
+      // approvalResult.anchor.sequenceNumber claims, so a mismatch here is
+      // "altered" (something tampered with the decision or its reference),
+      // not merely "missing" -- see packages/verifier's verifyAtSequence()
+      // doc comment. This also makes the old separate sequence-number
+      // cross-check redundant: this call already fetches by that exact
+      // position, so the mirror node reporting it back proves nothing new.
+      if (!approvalResult.anchor.sequenceNumber) {
+        throw new Error(
+          "Decision anchor has no sequenceNumber -- cannot look up its exact position.",
+        );
+      }
+      decisionVerifyResult = await verifyAtSequence(approvalResult.decision, {
+        topicId,
+        sequenceNumber: approvalResult.anchor.sequenceNumber,
+      });
       console.log(`decision anchor outcome: ${decisionVerifyResult.outcome}`);
       if (decisionVerifyResult.consensusTimestamp) {
         console.log(`decision consensus timestamp: ${decisionVerifyResult.consensusTimestamp}`);
       }
-      const referenceSequenceNumber = approvalResult.anchor.sequenceNumber;
-      sequenceMatch = sequenceNumbersMatch(decisionVerifyResult.sequenceNumber, referenceSequenceNumber);
-      console.log(
-        `sequence number cross-check: mirror node reports ${decisionVerifyResult.sequenceNumber ?? "n/a"}, ` +
-          `receipt's decision reference claims ${referenceSequenceNumber ?? "n/a"} -- ` +
-          `${sequenceMatch ? "MATCH" : "no match"}`,
-      );
+      sequenceMatch = decisionVerifyResult.outcome === "match";
 
       orderingResult = await verifyDecisionPrecedesSettlement(
         decisionVerifyResult,

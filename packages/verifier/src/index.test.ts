@@ -4,6 +4,7 @@ import {
   fetchSettlementConsensusTimestamp,
   sequenceNumbersMatch,
   verify,
+  verifyAtSequence,
   verifyDecisionPrecedesSettlement,
 } from "./index.ts";
 import type { VerifyResult } from "./index.ts";
@@ -34,6 +35,14 @@ describe("verify", () => {
     expect(result.consensusTimestamp).toBe("1700000000.000000001");
     expect(result.sequenceNumber).toBe(1);
     expect(result.hashscanUrl).toBe("https://hashscan.io/testnet/topic/0.0.777/messages");
+  });
+
+  it("does not match a message whose hash agrees but whose version does not", async () => {
+    const fetchImpl = (async () => page([{ v: 2, h: HASH }])) as typeof fetch;
+
+    const result = await verify(RECEIPT, { topicId: "0.0.777" }, fetchImpl);
+
+    expect(result.outcome).toBe("missing");
   });
 
   it("reports missing when the topic has messages but none match", async () => {
@@ -178,6 +187,16 @@ describe("verify", () => {
     await expect(
       verify(RECEIPT, { topicId: "0.0.1", network: "toString" }, fetchImpl),
     ).rejects.toThrow(/Unsupported network "toString"/);
+  });
+
+  it("rejects a topicId containing path segments instead of interpolating it into the mirror-node URL", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid topicId");
+    }) as typeof fetch;
+
+    await expect(
+      verify(RECEIPT, { topicId: "../../0.0.999999999/messages", network: "testnet" }, fetchImpl),
+    ).rejects.toThrow(/Not a Hedera topic id/);
   });
 });
 
@@ -524,5 +543,152 @@ describe("sequenceNumbersMatch", () => {
     expect(sequenceNumbersMatch(undefined, "42")).toBe(false);
     expect(sequenceNumbersMatch(42, undefined)).toBe(false);
     expect(sequenceNumbersMatch(undefined, undefined)).toBe(false);
+  });
+});
+
+function singleMessage(base64: string, sequenceNumber = 1, consensusTimestamp = "1700000000.000000001"): Response {
+  return new Response(
+    JSON.stringify({
+      message: base64,
+      consensus_timestamp: consensusTimestamp,
+      sequence_number: sequenceNumber,
+      topic_id: "0.0.777",
+    }),
+    { status: 200 },
+  );
+}
+
+function encode(obj: unknown): string {
+  return Buffer.from(JSON.stringify(obj)).toString("base64");
+}
+
+describe("verifyAtSequence", () => {
+  it("reports match when the message at that exact position has this hash and version", async () => {
+    const fetchImpl = (async () => singleMessage(encode({ v: 1, h: HASH }))) as typeof fetch;
+
+    const result = await verifyAtSequence(
+      RECEIPT,
+      { topicId: "0.0.777", sequenceNumber: "1" },
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result).toEqual({
+      outcome: "match",
+      computedHash: HASH,
+      consensusTimestamp: "1700000000.000000001",
+      sequenceNumber: 1,
+      hashscanUrl: "https://hashscan.io/testnet/topic/0.0.777/messages",
+    });
+  });
+
+  it('reports "altered" -- not "missing" -- when a message exists at that position with a DIFFERENT hash', async () => {
+    const fetchImpl = (async () => singleMessage(encode({ v: 1, h: "a".repeat(64) }))) as typeof fetch;
+
+    const result = await verifyAtSequence(
+      RECEIPT,
+      { topicId: "0.0.777", sequenceNumber: "1" },
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result.outcome).toBe("altered");
+    expect(result.computedHash).toBe(HASH);
+  });
+
+  it('reports "altered" when the message matches the hash but not the version', async () => {
+    const fetchImpl = (async () => singleMessage(encode({ v: 2, h: HASH }))) as typeof fetch;
+
+    const result = await verifyAtSequence(
+      RECEIPT,
+      { topicId: "0.0.777", sequenceNumber: "1" },
+      fetchImpl,
+      async () => {},
+    );
+
+    expect(result.outcome).toBe("altered");
+  });
+
+  it("retries a 404 (mirror-node ingestion lag) before reporting missing", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      return call < 3 ? new Response(null, { status: 404 }) : singleMessage(encode({ v: 1, h: HASH }));
+    }) as typeof fetch;
+    const sleepCalls: number[] = [];
+
+    const result = await verifyAtSequence(
+      RECEIPT,
+      { topicId: "0.0.777", sequenceNumber: "1" },
+      fetchImpl,
+      async (ms) => {
+        sleepCalls.push(ms);
+      },
+    );
+
+    expect(result.outcome).toBe("match");
+    expect(call).toBe(3);
+    expect(sleepCalls).toEqual([5_000, 5_000]);
+  });
+
+  it("reports missing after 6 attempts of a persistent 404", async () => {
+    const fetchImpl = (async () => new Response(null, { status: 404 })) as typeof fetch;
+    let calls = 0;
+    const countingFetch = (async (...args: Parameters<typeof fetch>) => {
+      calls += 1;
+      return fetchImpl(...args);
+    }) as typeof fetch;
+
+    const result = await verifyAtSequence(
+      RECEIPT,
+      { topicId: "0.0.777", sequenceNumber: "999" },
+      countingFetch,
+      async () => {},
+    );
+
+    expect(result).toEqual({ outcome: "missing", computedHash: HASH });
+    expect(calls).toBe(6);
+  });
+
+  it("throws on a non-404 non-2xx status", async () => {
+    const fetchImpl = (async () => new Response(null, { status: 500 })) as typeof fetch;
+
+    await expect(
+      verifyAtSequence(RECEIPT, { topicId: "0.0.777", sequenceNumber: "1" }, fetchImpl, async () => {}),
+    ).rejects.toThrow(/500/);
+  });
+
+  it("rejects a sequenceNumber containing path segments instead of letting it redirect the lookup to a different topic", async () => {
+    // The exact shape that, before this guard, let a crafted receipt's
+    // decision.sequenceNumber escape the --topic the caller believes is
+    // being checked and land on a completely different topic's message
+    // log -- confirmed live against the real mirror node before this fix.
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid sequenceNumber");
+    }) as typeof fetch;
+
+    await expect(
+      verifyAtSequence(
+        RECEIPT,
+        { topicId: "0.0.999999999", sequenceNumber: "../../0.0.10475837/messages/1" },
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/Not a topic message sequence number/);
+  });
+
+  it("rejects a topicId containing path segments instead of interpolating it into the mirror-node URL", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid topicId");
+    }) as typeof fetch;
+
+    await expect(
+      verifyAtSequence(
+        RECEIPT,
+        { topicId: "../../0.0.999999999/messages", sequenceNumber: "1" },
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/Not a Hedera topic id/);
   });
 });

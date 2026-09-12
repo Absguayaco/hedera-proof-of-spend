@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveTopicId } from "./cli.ts";
+import { classifyRun, describeAuthorizedDecision, extractDecisionReference, resolveTopicId } from "./cli.ts";
 
 describe("resolveTopicId", () => {
   it("prefers an explicit topic id over anything the receipt claims", () => {
@@ -26,5 +26,168 @@ describe("resolveTopicId", () => {
     expect(() => resolveTopicId(undefined, { decision: { topicId: 12345 } })).toThrow(/No topic id/);
     expect(() => resolveTopicId(undefined, { decision: null })).toThrow(/No topic id/);
     expect(() => resolveTopicId(undefined, { notDecision: {} })).toThrow(/No topic id/);
+  });
+});
+
+describe("extractDecisionReference", () => {
+  const VALID_RECEIPT = {
+    rail: "hedera",
+    authorizingDecision: { agent: "a", resource: "r", verdict: "approved", nonce: "n" },
+    decision: { nonce: "n", topicId: "0.0.777", sequenceNumber: "1" },
+    settlement: { transactionId: "0.0.99999@1700000000.123456789" },
+  };
+
+  it("extracts all four fields from a fully-bound receipt", () => {
+    const reference = extractDecisionReference(VALID_RECEIPT);
+
+    expect(reference).toEqual({
+      authorizingDecision: VALID_RECEIPT.authorizingDecision,
+      topicId: "0.0.777",
+      sequenceNumber: "1",
+      settlementTransactionId: "0.0.99999@1700000000.123456789",
+    });
+  });
+
+  it("returns undefined, not a throw, for a receipt with no authorizingDecision key at all", () => {
+    const { authorizingDecision, ...rest } = VALID_RECEIPT;
+    void authorizingDecision;
+    expect(extractDecisionReference(rest)).toBeUndefined();
+  });
+
+  it("returns undefined for a receipt whose authorizingDecision is explicitly null or undefined", () => {
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, authorizingDecision: null }),
+    ).toBeUndefined();
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, authorizingDecision: undefined }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when decision.topicId alone is missing", () => {
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, decision: { nonce: "n", sequenceNumber: "1" } }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when decision.sequenceNumber alone is missing", () => {
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, decision: { nonce: "n", topicId: "0.0.777" } }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when decision.topicId is present but not a string", () => {
+    expect(
+      extractDecisionReference({
+        ...VALID_RECEIPT,
+        decision: { nonce: "n", topicId: 777, sequenceNumber: "1" },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when decision.sequenceNumber is present but not a string", () => {
+    expect(
+      extractDecisionReference({
+        ...VALID_RECEIPT,
+        decision: { nonce: "n", topicId: "0.0.777", sequenceNumber: 1 },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when decision itself is null or not an object", () => {
+    expect(extractDecisionReference({ ...VALID_RECEIPT, decision: null })).toBeUndefined();
+    expect(extractDecisionReference({ ...VALID_RECEIPT, decision: "0.0.777" })).toBeUndefined();
+  });
+
+  it("returns undefined for a receipt with no settlement.transactionId", () => {
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, settlement: {} }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when settlement.transactionId is present but not a string", () => {
+    expect(
+      extractDecisionReference({ ...VALID_RECEIPT, settlement: { transactionId: 123 } }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when settlement itself is null or not an object", () => {
+    expect(extractDecisionReference({ ...VALID_RECEIPT, settlement: null })).toBeUndefined();
+    expect(extractDecisionReference({ ...VALID_RECEIPT, settlement: "paid" })).toBeUndefined();
+  });
+
+  it("returns undefined for a non-object receipt", () => {
+    expect(extractDecisionReference("not an object")).toBeUndefined();
+    expect(extractDecisionReference(null)).toBeUndefined();
+  });
+});
+
+describe("classifyRun", () => {
+  it("passes on an old-format receipt with no ordering reference, hash alone matching", () => {
+    expect(classifyRun("match", false, undefined, undefined)).toBe(true);
+  });
+
+  it("fails when the receipt's own hash did not match, even with no reference", () => {
+    expect(classifyRun("missing", false, undefined, undefined)).toBe(false);
+    expect(classifyRun("altered", false, undefined, undefined)).toBe(false);
+  });
+
+  it("fails when a reference is present but the decision anchor did not match (altered decision)", () => {
+    expect(classifyRun("match", true, "altered", "decision_before_settlement")).toBe(false);
+  });
+
+  it("fails when a reference is present but ordering was violated", () => {
+    expect(classifyRun("match", true, "match", "decision_not_before_settlement")).toBe(false);
+  });
+
+  it("passes only when hash matches, decision matches, and ordering holds", () => {
+    expect(classifyRun("match", true, "match", "decision_before_settlement")).toBe(true);
+  });
+});
+
+describe("describeAuthorizedDecision", () => {
+  const APPROVED_DECISION = {
+    agent: "hedera-proof-of-spend-e2e-agent",
+    resource: "https://store.example/buy/espresso",
+    verdict: "approved" as const,
+    amount: "15000000",
+    currency: "HBAR",
+    payTo: "0.0.99999",
+    budgetRuleId: "none",
+    nonce: "n",
+    decidedAt: "2026-09-11T00:00:00.000Z",
+  };
+
+  it("summarizes an approved decision, naming agent, resource, amount, currency, and payee", () => {
+    const result = describeAuthorizedDecision(APPROVED_DECISION);
+
+    expect(result).toEqual({
+      verdict: "approved",
+      summary:
+        "hedera-proof-of-spend-e2e-agent -> https://store.example/buy/espresso: approved " +
+        "(15000000 HBAR to 0.0.99999)",
+    });
+  });
+
+  it("summarizes a declined decision the same way, with verdict 'declined'", () => {
+    const result = describeAuthorizedDecision({ ...APPROVED_DECISION, verdict: "declined" });
+
+    expect(result?.verdict).toBe("declined");
+    expect(result?.summary).toContain(": declined (");
+  });
+
+  it("falls back to 'unknown ...' for each missing or wrong-typed field, without throwing", () => {
+    const result = describeAuthorizedDecision({ verdict: "approved" });
+
+    expect(result).toEqual({
+      verdict: "approved",
+      summary: "unknown agent -> unknown resource: approved (unknown amount unknown currency to unknown payee)",
+    });
+  });
+
+  it("returns undefined for anything without a recognizable verdict", () => {
+    expect(describeAuthorizedDecision({ ...APPROVED_DECISION, verdict: "maybe" })).toBeUndefined();
+    expect(describeAuthorizedDecision({})).toBeUndefined();
+    expect(describeAuthorizedDecision(null)).toBeUndefined();
+    expect(describeAuthorizedDecision("not an object")).toBeUndefined();
   });
 });
