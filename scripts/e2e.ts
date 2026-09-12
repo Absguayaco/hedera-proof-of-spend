@@ -695,7 +695,17 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run when this file is executed directly (`npm run e2e`, or
+// `node scripts/e2e.ts`) -- not when imported, e.g. by scripts/buy.ts for
+// its shared helpers (buildReceipt, bindReceiptToDecision,
+// buildDescribePurchase, fetchMenu, tinybarToNominalUsd). Without this
+// guard, importing anything from this file runs the entire live
+// walkthrough -- real network calls, a real payment -- as a side effect of
+// the import alone. Same pattern as packages/store/src/index.ts and
+// packages/verifier/src/cli.ts's own run-guards.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
