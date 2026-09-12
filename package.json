@@ -21,7 +21,8 @@
     "seed-budget": "node --env-file-if-exists=.env scripts/seed-budget.ts",
     "start:store": "node --env-file-if-exists=.env packages/store/src/index.ts",
     "verify": "node --env-file-if-exists=.env packages/verifier/src/cli.ts",
-    "buy": "node --env-file-if-exists=.env packages/buyer/src/cli.ts"
+    "buy": "node --env-file-if-exists=.env scripts/buy.ts",
+    "buy:raw": "node --env-file-if-exists=.env packages/buyer/src/cli.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0"
