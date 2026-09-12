@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { callerSuppliedCheckBudget, exitCodeFor, parseArgs } from "./buy.ts";
+import { callerSuppliedCheckBudget, exitCodeFor, parseArgs, resolveMode } from "./buy.ts";
 
 describe("parseArgs", () => {
   const ENV = {} as NodeJS.ProcessEnv;
@@ -85,6 +85,23 @@ describe("callerSuppliedCheckBudget", () => {
     const response = await checkBudget({ agent: "a", resource: "r" });
 
     expect(response).toEqual({ verdict: "approved", budgetRuleId: "none", reason: undefined });
+  });
+});
+
+describe("resolveMode", () => {
+  it("throws (refuses to buy) when neither an agent key nor a verdict is available", () => {
+    expect(() => resolveMode(undefined, undefined)).toThrow(/Refusing to buy/);
+  });
+
+  it("resolves to headless whenever an agent key is present, regardless of verdict", () => {
+    expect(resolveMode("key", undefined)).toBe("headless");
+    expect(resolveMode("key", "approved")).toBe("headless");
+    expect(resolveMode("key", "declined")).toBe("headless");
+  });
+
+  it("resolves to caller-supplied when a verdict is present and no agent key is", () => {
+    expect(resolveMode(undefined, "approved")).toBe("caller-supplied");
+    expect(resolveMode(undefined, "declined")).toBe("caller-supplied");
   });
 });
 

@@ -132,6 +132,32 @@ export function callerSuppliedCheckBudget(
 }
 
 /**
+ * Decides which of the two callers this run is, and REFUSES (throws)
+ * outright when neither is available -- no ASKRECEIPTS_AGENT_KEY and no
+ * caller-supplied verdict means nobody has actually checked a budget, and
+ * this command will not invent a verdict of its own. Pulled out as a pure
+ * function so this refusal -- the single most important behaviour in this
+ * file -- is directly testable without touching the environment or the
+ * network, the same way exitCodeFor() below makes the exit-code contract
+ * testable.
+ */
+export function resolveMode(
+  agentKey: string | undefined,
+  verdict: "approved" | "declined" | undefined,
+): "headless" | "caller-supplied" {
+  if (!agentKey && verdict === undefined) {
+    throw new Error(
+      "Refusing to buy: neither ASKRECEIPTS_AGENT_KEY nor --verdict is set. An agent that " +
+        "decides for itself whether it may spend is exactly what this project exists to " +
+        "prevent. Either set ASKRECEIPTS_AGENT_KEY so this command checks the budget itself, " +
+        "or pass --verdict approved|declined --rule <ruleId>, from a caller that already " +
+        "checked over MCP.",
+    );
+  }
+  return agentKey ? "headless" : "caller-supplied";
+}
+
+/**
  * The exit-code contract this command promises, pulled out as a pure
  * function so it is directly testable without decideAndBuy()'s own network
  * calls. See this file's top doc comment for what each code means.
@@ -174,31 +200,27 @@ function formatHbar(tinybar: bigint): string {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2), process.env);
-  const operatorId = requireEnv("HEDERA_OPERATOR_ID");
-  const operatorKey = requireEnv("HEDERA_OPERATOR_KEY");
-  assertTestnet(process.env.HEDERA_NETWORK);
-
   const agentKey = process.env.ASKRECEIPTS_AGENT_KEY?.trim() || undefined;
 
-  if (!agentKey && args.verdict === undefined) {
-    throw new Error(
-      "Refusing to buy: neither ASKRECEIPTS_AGENT_KEY nor --verdict is set. An agent that " +
-        "decides for itself whether it may spend is exactly what this project exists to " +
-        "prevent. Either set ASKRECEIPTS_AGENT_KEY so this command checks the budget itself, " +
-        "or pass --verdict approved|declined --rule <ruleId>, from a caller that already " +
-        "checked over MCP.",
-    );
-  }
-  if (agentKey && args.verdict !== undefined) {
+  // Resolved -- and refused, if neither an agent key nor a caller-supplied
+  // verdict is available -- BEFORE requireEnv() below even asks for
+  // operator credentials, so the refusal is what a misconfigured caller
+  // actually sees first, not a confusing "HEDERA_OPERATOR_ID is not set"
+  // that has nothing to do with what they actually got wrong.
+  const mode = resolveMode(agentKey, args.verdict);
+  if (mode === "headless" && args.verdict !== undefined) {
     console.log(
       "note: ASKRECEIPTS_AGENT_KEY is set, so this command checks the budget itself -- " +
         "the --verdict/--rule/--reason you passed are ignored.",
     );
   }
 
+  const operatorId = requireEnv("HEDERA_OPERATOR_ID");
+  const operatorKey = requireEnv("HEDERA_OPERATOR_KEY");
+  assertTestnet(process.env.HEDERA_NETWORK);
+
   const store = storeUrl();
   const resource = `${store}/buy/${args.slug}`;
-  const mode: "headless" | "caller-supplied" = agentKey ? "headless" : "caller-supplied";
 
   console.log(`mode: ${mode}`);
   console.log(`agent: ${args.agent}`);
@@ -241,10 +263,23 @@ async function main(): Promise<void> {
 
   // result.outcome === "purchased"
   const baseReceipt = buildReceipt(args.slug, result.purchase);
-  const receipt = bindReceiptToDecision(baseReceipt, result.decision, {
-    topicId: result.anchor.topicId,
-    sequenceNumber: result.anchor.sequenceNumber,
-  });
+  // Guarded: a real payment has already settled by this point (result.purchase
+  // is real), so a bindReceiptToDecision() failure (missing topicId/
+  // sequenceNumber -- see its own doc comment) must never cost the operator
+  // their receipt, transaction id, and HashScan link. Same reasoning and the
+  // same fallback-to-baseReceipt shape as scripts/e2e.ts's own Step 3.
+  let receipt: Record<string, unknown> = baseReceipt;
+  try {
+    receipt = bindReceiptToDecision(baseReceipt, result.decision, {
+      topicId: result.anchor.topicId,
+      sequenceNumber: result.anchor.sequenceNumber,
+    });
+  } catch (error) {
+    console.error(`Could not bind the receipt to its authorizing decision: ${describeError(error)}`);
+    console.error(
+      "Continuing with an unbound receipt -- the purchase and its anchor are still real.",
+    );
+  }
 
   console.log(`BOUGHT: ${args.slug}`);
   console.log(`paid: ${formatHbar(result.purchase.amountTinybar)} HBAR`);

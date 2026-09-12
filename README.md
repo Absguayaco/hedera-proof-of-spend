@@ -351,8 +351,8 @@ message, on a network neither of us controls.
 - **The budget guard is advisory for `npm run buy:raw`, and preventive for
   `npm run buy` / `decideAndBuy()`.** The customer runs the agent, so a
   direct call to `buyResource()` can be refused and used anyway — the
-  ledger only records the refusal. `decideAndBuy()` (`scripts/decide-and-
-  buy.ts`, which `scripts/buy.ts` always goes through) is stricter: it
+  ledger only records the refusal. `decideAndBuy()` (`scripts/decide-and-buy.ts`,
+  which `scripts/buy.ts` always goes through) is stricter: it
   anchors the spend decision to HCS *before* paying, and settles nothing
   unless that anchor reaches consensus with an approved verdict — a decline
   is anchored with the same rigor as an approval, not just recorded after

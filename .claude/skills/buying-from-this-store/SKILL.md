@@ -59,9 +59,12 @@ npm run buy -- espresso --agent <name> --verdict approved --rule <ruleId>
 That is the whole of it. `scripts/buy.ts` calls `decideAndBuy()`, which
 implements 1–4; you pass the verdict you got from `check_budget`, and file the
 receipt it prints. With `ASKRECEIPTS_AGENT_KEY` set it checks and files itself
-instead, for a run with no agent in the loop.
+instead, for a run with no agent in the loop — and in that case `--verdict`
+is ignored (this repo's own `.env` sets that variable, so running the
+command above here will always take that path; unset it locally to exercise
+the caller-supplied one shown above).
 
-`decideAndBuy()` It has no branch that reaches a payment without a confirmed
+`decideAndBuy()` has no branch that reaches a payment without a confirmed
 anchor: a failed anchor returns `anchor_failed`, a non-approved verdict returns
 `declined`, and both return before the payment is reachable.
 
