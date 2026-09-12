@@ -5,7 +5,7 @@ import {
   buildReceipt,
   fetchMenu,
   slugFromResource,
-  tinybarToNominalUsd,
+  tinybarToHbar,
   verifyWithRetry,
 } from "./e2e.ts";
 import type { MenuItemPrice } from "./e2e.ts";
@@ -14,16 +14,16 @@ import type { BuyResult } from "@proof-of-spend/buyer";
 import type { Decision } from "./decide-and-buy.ts";
 import type { VerifyResult } from "@proof-of-spend/verifier";
 
-describe("tinybarToNominalUsd", () => {
-  it("prices the menu's three real amounts at the nominal 1 HBAR = $1.00 rate", () => {
-    expect(tinybarToNominalUsd(15_000_000n)).toBe(0.15); // espresso
-    expect(tinybarToNominalUsd(25_000_000n)).toBe(0.25); // flat-white
-    expect(tinybarToNominalUsd(35_000_000n)).toBe(0.35); // cold-brew
+describe("tinybarToHbar", () => {
+  it("converts the menu's three real tinybar amounts to HBAR", () => {
+    expect(tinybarToHbar(15_000_000n)).toBe(0.15); // espresso
+    expect(tinybarToHbar(25_000_000n)).toBe(0.25); // flat-white
+    expect(tinybarToHbar(35_000_000n)).toBe(0.35); // cold-brew
   });
 
   it("throws on a non-positive amount rather than silently pricing it at zero", () => {
-    expect(() => tinybarToNominalUsd(0n)).toThrow(/non-positive/);
-    expect(() => tinybarToNominalUsd(-1n)).toThrow(/non-positive/);
+    expect(() => tinybarToHbar(0n)).toThrow(/non-positive/);
+    expect(() => tinybarToHbar(-1n)).toThrow(/non-positive/);
   });
 });
 
@@ -77,14 +77,14 @@ describe("buildDescribePurchase", () => {
     ["espresso", { slug: "espresso", name: "Espresso", priceTinybar: 15_000_000n }],
   ]);
 
-  it("looks up the slug from the resource URL and prices it at the nominal rate", () => {
+  it("looks up the slug from the resource URL and prices it in HBAR", () => {
     const describePurchase = buildDescribePurchase(menu);
     const purchase = describePurchase({
       agent: "agent",
       resource: "https://store.example/buy/espresso",
     });
     expect(purchase.amount).toBe(0.15);
-    expect(purchase.currency).toBe("USD");
+    expect(purchase.currency).toBe("HBAR");
     expect(purchase.merchant).toBe("hedera-proof-of-spend store");
   });
 

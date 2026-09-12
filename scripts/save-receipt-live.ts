@@ -18,8 +18,10 @@
  * CURRENCY MUST MATCH whatever the budget rule and every check_budget call
  * already use, or spend silently never counts against the rule (askReceipts
  * filters by currency, with no conversion). Callers of this module must
- * pass the SAME nominal amount/currency already computed for check_budget
- * -- see scripts/e2e.ts's wiring.
+ * pass the SAME amount/currency already computed for check_budget -- in
+ * this project that is always HBAR, from scripts/e2e.ts's
+ * buildDescribePurchase(); see its wiring, and
+ * .claude/skills/anchor-before-pay/SKILL.md's "Always HBAR".
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";

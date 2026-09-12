@@ -50,7 +50,10 @@ export interface LiveCheckBudgetConfig {
 export interface CheckBudgetPurchase {
   /** Purchase amount, e.g. 4.25. Must be > 0. */
   readonly amount: number;
-  /** ISO currency code, e.g. "USD". */
+  /** Currency code, passed through to askReceipts verbatim. Always "HBAR"
+   *  in this project: askReceipts filters spend by currency with no
+   *  conversion, so anything else would never count against the HBAR
+   *  budget rule scripts/seed-budget.ts provisions. */
   readonly currency: string;
   readonly merchant?: string;
   readonly description?: string;

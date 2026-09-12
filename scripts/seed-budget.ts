@@ -21,7 +21,7 @@
  * Usage:
  *   ASKRECEIPTS_AGENT_KEY=... npm run seed-budget
  *   ASKRECEIPTS_AGENT_KEY=... npm run seed-budget -- \
- *     --description "Refuse any agent purchase over $0.30." --enforcement refuse
+ *     --description "Refuse any agent purchase over 0.30 HBAR." --enforcement refuse
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -31,14 +31,23 @@ const CLIENT_INFO = { name: "hedera-proof-of-spend", version: "0.1.0" };
 const CREATE_BUDGET_TOOL = "create_budget";
 const DEFAULT_ASKRECEIPTS_URL = "https://www.askreceipts.com/api/mcp";
 
-// The exact wording docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's
+// The wording docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's
 // Prerequisite section specifies, matching (verbatim) scripts/e2e.ts's own
 // MERCHANT constant ("hedera-proof-of-spend store") so askReceipts' NLU
 // rule-matching is less likely to scope the rule differently than intended.
-// A threshold strictly between espresso ($0.15) and cold-brew ($0.35) makes
-// exactly one menu item decline and at least one reliably approve; $0.30
-// sits in the middle of that gap with margin on both sides.
-const DEFAULT_DESCRIPTION = "Refuse any agent purchase on the hedera-proof-of-spend store over $0.30.";
+// A threshold strictly between espresso (0.15 HBAR) and cold-brew (0.35
+// HBAR) makes exactly one menu item decline and at least one reliably
+// approve; 0.30 HBAR sits in the middle of that gap with margin on both
+// sides.
+//
+// Denominated in HBAR, and it must stay that way: askReceipts counts spend
+// by filtering receipts on currency, so a rule in any other currency would
+// be created, look correct, and never match what scripts/e2e.ts actually
+// files -- the demo's own decline would stop declining. This rule and
+// e2e.ts's buildDescribePurchase() have to name the same currency. See
+// .claude/skills/anchor-before-pay/SKILL.md, "Always HBAR".
+const DEFAULT_DESCRIPTION =
+  "Refuse any agent purchase on the hedera-proof-of-spend store over 0.30 HBAR.";
 const DEFAULT_ENFORCEMENT = "refuse";
 const VALID_ENFORCEMENTS = new Set(["refuse", "warn", "notify"]);
 
