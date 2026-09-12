@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRun, extractDecisionReference, resolveTopicId } from "./cli.ts";
+import { classifyRun, describeAuthorizedDecision, extractDecisionReference, resolveTopicId } from "./cli.ts";
 
 describe("resolveTopicId", () => {
   it("prefers an explicit topic id over anything the receipt claims", () => {
@@ -141,5 +141,53 @@ describe("classifyRun", () => {
 
   it("passes only when hash matches, decision matches, and ordering holds", () => {
     expect(classifyRun("match", true, "match", "decision_before_settlement")).toBe(true);
+  });
+});
+
+describe("describeAuthorizedDecision", () => {
+  const APPROVED_DECISION = {
+    agent: "hedera-proof-of-spend-e2e-agent",
+    resource: "https://store.example/buy/espresso",
+    verdict: "approved" as const,
+    amount: "15000000",
+    currency: "HBAR",
+    payTo: "0.0.99999",
+    budgetRuleId: "none",
+    nonce: "n",
+    decidedAt: "2026-09-11T00:00:00.000Z",
+  };
+
+  it("summarizes an approved decision, naming agent, resource, amount, currency, and payee", () => {
+    const result = describeAuthorizedDecision(APPROVED_DECISION);
+
+    expect(result).toEqual({
+      verdict: "approved",
+      summary:
+        "hedera-proof-of-spend-e2e-agent -> https://store.example/buy/espresso: approved " +
+        "(15000000 HBAR to 0.0.99999)",
+    });
+  });
+
+  it("summarizes a declined decision the same way, with verdict 'declined'", () => {
+    const result = describeAuthorizedDecision({ ...APPROVED_DECISION, verdict: "declined" });
+
+    expect(result?.verdict).toBe("declined");
+    expect(result?.summary).toContain(": declined (");
+  });
+
+  it("falls back to 'unknown ...' for each missing or wrong-typed field, without throwing", () => {
+    const result = describeAuthorizedDecision({ verdict: "approved" });
+
+    expect(result).toEqual({
+      verdict: "approved",
+      summary: "unknown agent -> unknown resource: approved (unknown amount unknown currency to unknown payee)",
+    });
+  });
+
+  it("returns undefined for anything without a recognizable verdict", () => {
+    expect(describeAuthorizedDecision({ ...APPROVED_DECISION, verdict: "maybe" })).toBeUndefined();
+    expect(describeAuthorizedDecision({})).toBeUndefined();
+    expect(describeAuthorizedDecision(null)).toBeUndefined();
+    expect(describeAuthorizedDecision("not an object")).toBeUndefined();
   });
 });

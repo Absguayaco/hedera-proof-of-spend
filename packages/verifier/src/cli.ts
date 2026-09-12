@@ -169,6 +169,36 @@ export function classifyRun(
   );
 }
 
+/** What `main()` needs to know about the authorizing decision itself, for
+ *  its own console output -- so an auditor actually SEES what was
+ *  authorized (verdict, amount, payee), not just "match"/"altered". Loose
+ *  about every field but `verdict` (each missing/wrong-typed field just
+ *  shows as "unknown ..."), since packages/verifier has no dependency on
+ *  scripts/decide-and-buy.ts's Decision type (see this package's
+ *  package.json -- that dependency list is the claim) and a receipt's
+ *  authorizingDecision is, to this file, forever just `unknown`. */
+export interface AuthorizedDecisionSummary {
+  readonly verdict: "approved" | "declined";
+  readonly summary: string;
+}
+
+export function describeAuthorizedDecision(decision: unknown): AuthorizedDecisionSummary | undefined {
+  if (decision === null || typeof decision !== "object") return undefined;
+  const d = decision as Record<string, unknown>;
+  if (d.verdict !== "approved" && d.verdict !== "declined") return undefined;
+
+  const agent = typeof d.agent === "string" ? d.agent : "unknown agent";
+  const resource = typeof d.resource === "string" ? d.resource : "unknown resource";
+  const amount = typeof d.amount === "string" ? d.amount : "unknown amount";
+  const currency = typeof d.currency === "string" ? d.currency : "unknown currency";
+  const payTo = typeof d.payTo === "string" ? d.payTo : "unknown payee";
+
+  return {
+    verdict: d.verdict,
+    summary: `${agent} -> ${resource}: ${d.verdict} (${amount} ${currency} to ${payTo})`,
+  };
+}
+
 function section(title: string): void {
   console.log("");
   console.log(`=== ${title} ===`);
@@ -251,6 +281,24 @@ async function main(): Promise<void> {
     console.log(`decision anchor outcome: ${decisionResult.outcome}`);
     if (decisionResult.consensusTimestamp) {
       console.log(`decision consensus timestamp: ${decisionResult.consensusTimestamp}`);
+    }
+
+    // Print what was actually authorized -- not just that the anchor
+    // matched. Without this, a receipt whose decision was DECLINED (the
+    // agent was told to refuse and paid anyway) still reports a clean
+    // "decision anchor outcome: match" here with no visible sign of what
+    // that decision actually said, and this tool's own README claims that
+    // exact scenario is provable.
+    const decisionSummary = describeAuthorizedDecision(reference.authorizingDecision);
+    if (decisionSummary) {
+      console.log(`authorizing decision: ${decisionSummary.summary}`);
+      if (decisionSummary.verdict === "declined") {
+        console.log(
+          "NOTE: this decision was DECLINED. If the settlement below still succeeded, this is " +
+            "proof the agent disobeyed it and paid anyway -- exactly what anchoring a refusal " +
+            "is for: an operator cannot quietly delete it or claim it never happened.",
+        );
+      }
     }
 
     orderingResult = await verifyDecisionPrecedesSettlement(

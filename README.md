@@ -181,9 +181,15 @@ Node 24 is required and Vercel selects it from `engines` in `package.json`.
 
 1. The agent calls `check_budget` and is told whether it may spend.
 2. It requests a resource from the Hedera store, receives a 402, and pays in HBAR.
-3. The settled purchase is filed as a receipt on rail `hedera`.
-4. The agent hashes that receipt and submits the hash to the HCS topic.
-5. The verifier re-hashes the receipt independently and confirms the topic agrees.
+3. The settled purchase is filed to the ledger (askReceipts), on rail `hedera`,
+   so a later `check_budget` call sees the accumulated spend — this is a
+   separate, smaller record (merchant, nominal amount, currency, timestamp)
+   from the receipt object the next two steps hash and anchor.
+4. The agent also builds its own receipt object — the full settled purchase,
+   bound to the decision that authorized it — hashes that, and submits the
+   hash to the HCS topic.
+5. The verifier re-hashes that same receipt object independently and confirms
+   the topic agrees.
 6. HashScan shows the same message, on a network neither of us controls.
 7. A final call returns spend across every rail — x402, MPP and Hedera in one answer.
 
@@ -210,6 +216,13 @@ without ever asking us for anything.
 To run only the verification half, against a receipt you already hold:
 
     npm run verify -- --receipt ./receipt.json
+
+This one command checks both: it re-hashes the receipt against the topic
+(steps 4-6 above) *and*, when the receipt carries the decision/settlement
+reference, runs the same ordering proof the walkthrough does — the decision
+anchor and the decision-before-settlement timestamp comparison — printing
+the authorizing decision's own verdict, amount and payee, not just a bare
+match/no-match.
 
 If you omit `--topic`/`HCS_TOPIC_ID`, this falls back to whatever topic the
 receipt itself names — printed with a warning, because that only proves the

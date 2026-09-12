@@ -384,9 +384,14 @@ async function main(): Promise<void> {
     );
     console.error(
       approvalResult.outcome === "declined"
-        ? "The pre-provisioned budget rule appears to be refusing even the cheap item -- " +
-            "either the rule's threshold is wrong (it must sit strictly between $0.25 and " +
-            "$0.35) or askReceipts could not evaluate it -- see the `reason:` line above. See " +
+        ? "The pre-provisioned budget rule appears to be refusing even the cheap item. Three " +
+            "possible causes: (1) the rule's threshold is wrong (it must sit strictly between " +
+            "$0.25 and $0.35); (2) askReceipts could not evaluate it -- see the `reason:` line " +
+            "above; or (3) accumulated spend from previous runs of this same walkthrough has " +
+            "already put the account over that threshold -- this script files every settled " +
+            "purchase to askReceipts (see \"Filing the receipt to askReceipts\" above), so a " +
+            "genuinely-correct rule can start refusing on a later run for exactly that reason, " +
+            "not because the rule itself is wrong. See " +
             "docs/superpowers/plans/2026-09-09-e2e-walkthrough.md's Prerequisite section for " +
             "the exact proposed wording."
         : "The decision could not be anchored to HCS, so nothing was bought -- see the anchor error above.",

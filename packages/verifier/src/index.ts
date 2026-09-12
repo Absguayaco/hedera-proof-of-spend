@@ -63,6 +63,42 @@ function mirrorBaseUrl(network: string): string {
   return MIRROR_NODE_URL[network];
 }
 
+const TOPIC_ID = /^\d+\.\d+\.\d+$/;
+const SEQUENCE_NUMBER = /^\d+$/;
+
+/**
+ * Rejects a topicId that is not in the exact shard.realm.num shape the
+ * mirror node expects, BEFORE it is interpolated into a URL path. topicId
+ * can arrive from an untrusted receipt (see
+ * packages/verifier/src/cli.ts's resolveTopicId() receipt-fallback path,
+ * and extractDecisionReference()'s decision.topicId) -- without this
+ * guard, a crafted value containing path segments (e.g.
+ * "../../0.0.OTHER/messages") could make the mirror-node request land on
+ * a DIFFERENT topic than the one the caller believes it is checking,
+ * silently defeating an explicit --topic. Same defensive shape this file's
+ * own toDashTransactionId() already applies to transaction ids before use.
+ */
+function assertValidTopicId(topicId: string): void {
+  if (!TOPIC_ID.test(topicId)) {
+    throw new Error(`Not a Hedera topic id (got "${topicId}"). Expected shard.realm.num, e.g. 0.0.12345.`);
+  }
+}
+
+/** Same reasoning as assertValidTopicId() above, for the sequenceNumber
+ *  verifyAtSequence() interpolates into its own URL path -- it arrives from
+ *  a receipt's decision.sequenceNumber, equally untrusted. A value like
+ *  "../../0.0.OTHER/messages/1" would otherwise let a crafted receipt
+ *  redirect the lookup to any topic, message log, or (via a scheme-relative
+ *  value) origin of its choosing, while --topic's own value is left
+ *  unvalidated in the same string. */
+function assertValidSequenceNumber(sequenceNumber: string): void {
+  if (!SEQUENCE_NUMBER.test(sequenceNumber)) {
+    throw new Error(
+      `Not a topic message sequence number (got "${sequenceNumber}"). Expected a non-negative integer.`,
+    );
+  }
+}
+
 interface MirrorMessage {
   readonly message: string; // base64
   readonly consensus_timestamp: string;
@@ -84,6 +120,7 @@ export async function verify(
   fetchImpl: typeof fetch = fetch,
 ): Promise<VerifyResult> {
   const computedHash = hashReceipt(receipt);
+  assertValidTopicId(opts.topicId);
   const network = opts.network ?? "testnet";
   const base = mirrorBaseUrl(network);
 
@@ -178,6 +215,8 @@ export async function verifyAtSequence(
   sleepImpl: (ms: number) => Promise<void> = sleep,
 ): Promise<VerifyResult> {
   const computedHash = hashReceipt(target);
+  assertValidTopicId(opts.topicId);
+  assertValidSequenceNumber(opts.sequenceNumber);
   const network = opts.network ?? "testnet";
   const base = mirrorBaseUrl(network);
   const url = `${base}/api/v1/topics/${opts.topicId}/messages/${opts.sequenceNumber}`;

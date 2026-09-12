@@ -188,6 +188,16 @@ describe("verify", () => {
       verify(RECEIPT, { topicId: "0.0.1", network: "toString" }, fetchImpl),
     ).rejects.toThrow(/Unsupported network "toString"/);
   });
+
+  it("rejects a topicId containing path segments instead of interpolating it into the mirror-node URL", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid topicId");
+    }) as typeof fetch;
+
+    await expect(
+      verify(RECEIPT, { topicId: "../../0.0.999999999/messages", network: "testnet" }, fetchImpl),
+    ).rejects.toThrow(/Not a Hedera topic id/);
+  });
 });
 
 function transactionsPage(entries: Array<{ consensus_timestamp: string; result?: string }>): Response {
@@ -646,5 +656,39 @@ describe("verifyAtSequence", () => {
     await expect(
       verifyAtSequence(RECEIPT, { topicId: "0.0.777", sequenceNumber: "1" }, fetchImpl, async () => {}),
     ).rejects.toThrow(/500/);
+  });
+
+  it("rejects a sequenceNumber containing path segments instead of letting it redirect the lookup to a different topic", async () => {
+    // The exact shape that, before this guard, let a crafted receipt's
+    // decision.sequenceNumber escape the --topic the caller believes is
+    // being checked and land on a completely different topic's message
+    // log -- confirmed live against the real mirror node before this fix.
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid sequenceNumber");
+    }) as typeof fetch;
+
+    await expect(
+      verifyAtSequence(
+        RECEIPT,
+        { topicId: "0.0.999999999", sequenceNumber: "../../0.0.10475837/messages/1" },
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/Not a topic message sequence number/);
+  });
+
+  it("rejects a topicId containing path segments instead of interpolating it into the mirror-node URL", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetchImpl must never be called for an invalid topicId");
+    }) as typeof fetch;
+
+    await expect(
+      verifyAtSequence(
+        RECEIPT,
+        { topicId: "../../0.0.999999999/messages", sequenceNumber: "1" },
+        fetchImpl,
+        async () => {},
+      ),
+    ).rejects.toThrow(/Not a Hedera topic id/);
   });
 });
