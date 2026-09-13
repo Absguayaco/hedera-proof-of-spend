@@ -111,8 +111,14 @@ event.
 `npm ci` installs strictly from the committed lockfile and resolves nothing new.
 There is no build step: Node 24 executes the TypeScript sources directly.
 
-Only two environment variables are required; everything else defaults to public
-infrastructure. See `.env.example`.
+`npm run e2e` needs three environment variables: `HEDERA_OPERATOR_ID` and
+`HEDERA_OPERATOR_KEY` for the account that pays and anchors, and
+`ASKRECEIPTS_AGENT_KEY` for the receipt ledger it checks the budget against.
+Everything else defaults to public infrastructure. See `.env.example`.
+
+**Verifying an anchor needs none of them.** If you only want to check that this
+project's claims hold, you need no account, no key and no code of ours — see
+"Verify it yourself" below, which runs on `curl` against a public mirror node.
 
 ## The store
 
