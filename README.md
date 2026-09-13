@@ -113,7 +113,9 @@ There is no build step: Node 24 executes the TypeScript sources directly.
 
 `npm run e2e` needs three environment variables: `HEDERA_OPERATOR_ID` and
 `HEDERA_OPERATOR_KEY` for the account that pays and anchors, and
-`ASKRECEIPTS_AGENT_KEY` for the receipt ledger it checks the budget against.
+`ASKRECEIPTS_AGENT_KEY` for the receipt ledger it checks the budget against —
+create one at [askreceipts.com](https://www.askreceipts.com) under the account
+menu's "Agent keys" tab; it is shown once.
 Everything else defaults to public infrastructure. See `.env.example`.
 
 **Verifying an anchor needs none of them.** If you only want to check that this
