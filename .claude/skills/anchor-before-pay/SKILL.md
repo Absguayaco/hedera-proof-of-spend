@@ -241,6 +241,20 @@ limit       0.20 HBAR per day · refuse · active
 If none: `no limits set — nothing would stop me`. Say it plainly; an
 unconstrained agent is the thing the budget exists to prevent.
 
+**Then offer one, in the same answer.** Reporting that nothing constrains you
+and stopping there leaves the person to work out that a limit is the remedy,
+and costs a round trip to say so. Add exactly one line under the report:
+
+```
+no limits set — nothing would stop me
+Shall I cap it at 0.20 HBAR a day, refusing anything over?
+```
+
+A `yes` is then enough to run `create_budget` — see "Set a budget" for the
+shape, and note it is always HBAR. **Never create the budget unasked.** The
+offer is a question; a limit the person did not agree to is still a limit the
+agent chose, which is the thing this project exists to prevent.
+
 ## How much have I spent
 
 Asked what is left, what you have used, or how close you are to the cap —
